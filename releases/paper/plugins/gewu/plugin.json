@@ -1,0 +1,11 @@
+{
+  "apiVersion":"gewu.plugin/v1", "id":"paper", "version":"0.2.0", "title":"Paper", "scope":"resource",
+  "backend":{"connector":"gewu-stdio","config":{"entry":"bin/paper-gewu"}},
+  "settingsSchema":{"type":"object","additionalProperties":false,"properties":{"executable":{"type":"string","minLength":1}}},
+  "views":[
+    {"id":"editor","title":"Manuscript editor","kind":"webview","placement":"main","entry":"web/index.html","resourceTypes":["paper.project"],
+     "stateSchema":{"type":"object","properties":{"scroll":{"type":"number"}},"additionalProperties":false}},
+    {"id":"source","title":"Manuscript source","kind":"builtin","placement":"main","renderer":"text","resourceTypes":["paper.source"]},
+    {"id":"preview","title":"Paper preview","kind":"builtin","placement":"main","renderer":"preview","resourceTypes":["paper.output"],"mimeTypes":["text/html","application/pdf"]}
+  ]
+}

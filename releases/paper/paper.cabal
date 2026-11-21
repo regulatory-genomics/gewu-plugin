@@ -1,0 +1,123 @@
+cabal-version: 3.0
+
+name:           paper
+version:        0.3.4
+description:    Please see the README on GitHub at <https://github.com/githubuser/paper#readme>
+homepage:       https://github.com/regulatory-genomics/paper#readme
+bug-reports:    https://github.com/regulatory-genomics/paper/issues
+author:         Kai Zhang
+maintainer:     kai@kzhang.org
+copyright:      2023-2026 Kai Zhang
+license:        BSD-3-Clause
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+data-files:
+    data/*.tex
+    data/*.dotx
+    data/*.html
+    data/*.openxml
+    data/*.csl
+    data/template/*.md
+    data/template/*.yaml
+    data/template/figures/Gull.jpg
+
+source-repository head
+  type: git
+  location: https://github.com/regulatory-genomics/paper
+
+library
+  ghc-options: -O2 -Wall -Wcompat -Wincomplete-record-updates -Wno-unused-imports -Wno-name-shadowing -Wno-type-defaults -Wno-incomplete-patterns -Wno-incomplete-uni-patterns -Wno-x-partial
+  exposed-modules:
+      Text.Pandoc.Paper
+      Text.Pandoc.Paper.Writers
+      Text.Pandoc.Paper.Readers
+      Text.Pandoc.Paper.Editor
+      Text.Pandoc.Paper.Filters
+      Text.Pandoc.Paper.Filters.Authors
+      Text.Pandoc.Paper.Filters.LaTeX
+      Text.Pandoc.Paper.Filters.Path
+      Text.Pandoc.Paper.Filters.CrossRef
+      Text.Pandoc.Paper.Filters.CrossRef.Types
+      Text.Pandoc.Paper.Filters.CrossRef.Block
+      Text.Pandoc.Paper.Filters.CrossRef.Reference
+      Text.Pandoc.Paper.Filters.Citations
+      Text.Pandoc.Paper.Filters.Unicode
+      Text.Pandoc.Paper.Templates
+      Text.Pandoc.Paper.CSL
+      Text.Pandoc.Paper.Internal
+  other-modules:
+      Paths_paper
+  hs-source-dirs:
+      src
+  build-depends:
+      base >=4.21 && <5
+    , aeson
+    , bytestring >= 0.11.0
+    , bytestring-encoding
+    , bibtex
+    , citeproc
+    , containers
+    , deepseq
+    , data-default
+    , directory
+    , doclayout
+    , exceptions
+    , filepath
+    , file-embed
+    , http-client
+    , http-client-tls
+    , http-types
+    , microlens >=0.4.12.0 && <0.5.0.0
+    , microlens-ghc >=0.4.3.10 && <0.5.0.0
+    , microlens-mtl >=0.2.0.1 && <0.3.0.0
+    , microlens-th >=0.4.3.10 && <0.5.0.0
+    , mtl >=1.1 && <2.4
+    , network-uri
+    , pandoc
+    , pandoc-types
+    , parsec
+    , shelly
+    , temporary
+    , text
+    , unordered-containers
+    , utility-ht
+    , vector
+    , yaml
+  default-language: GHC2024
+
+executable paper
+  main-is: Main.hs
+  other-modules:
+      Paths_paper
+  hs-source-dirs:
+      app
+  ghc-options: -O2 -Wall -threaded -Wno-unused-imports -Wno-name-shadowing -Wno-type-defaults -Wno-incomplete-patterns -Wno-incomplete-uni-patterns -Wno-x-partial
+  build-depends:
+      base >=4.21 && <5
+    , aeson
+    , aeson-pretty
+    , bytestring
+    , citeproc
+    , containers
+    , data-default
+    , directory
+    , doclayout
+    , doctemplates
+    , file-embed
+    , filepath
+    , http-client
+    , http-client-tls
+    , http-types
+    , mtl
+    , network-uri
+    , optparse-applicative
+    , pandoc
+    , pandoc-types
+    , paper
+    , shelly
+    , temporary
+    , text
+  default-language: GHC2024

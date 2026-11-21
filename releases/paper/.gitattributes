@@ -1,0 +1,2 @@
+# The CRLF fixture is deliberately CRLF; keep it byte-exact on every checkout.
+plugins/gewu/fixtures/editable/crlf.md -text

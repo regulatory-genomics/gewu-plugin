@@ -1,0 +1,14 @@
+[
+  {"send":{"id":"start","op":"activate","params":{"apiVersion":"gewu.plugin/v1","instanceId":"fixture","generation":1,"workspaceId":"test","workspaceRoot":"${workspace}","bindingResource":{"uri":"workspace:///figure","type":"inkscape.document"},"settings":"${settings}"}}},
+  {"expect":{"id":"start","type":"result"}},
+  {"send":{"id":"read","op":"call","params":{"tool":"state","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"test","callId":"read"}}}},
+  {"expect":{"id":"read","type":"result","result":{"ok":true,"data":{"exists":false,"revision":null,"objects":[]},"resources":[]}}},
+  {"send":{"id":"create","op":"call","params":{"tool":"edit","args":{"expectedRevision":null,"operations":[{"op":"create_document","width":100,"height":80}]},"context":{"instanceId":"fixture","generation":1,"workspaceId":"test","callId":"create"}}}},
+  {"expect":{"id":"create","type":"result","result":{"ok":true,"data":{"beforeRevision":null,"affected":[]}}}},
+  {"send":{"id":"stale","op":"call","params":{"tool":"undo","args":{"expectedRevision":"stale"},"context":{"instanceId":"fixture","generation":1,"workspaceId":"test","callId":"stale"}}}},
+  {"expect":{"id":"stale","type":"result","result":{"ok":false,"error":{"code":"STALE_REVISION","retryable":true},"resources":[]}}},
+  {"send":{"id":"cancel","op":"cancel","params":{"callId":"never-started"}}},
+  {"expect":{"id":"cancel","type":"result","result":{"state":"not_found"}}},
+  {"send":{"id":"stop","op":"deactivate","params":{"reason":"test complete"}}},
+  {"expect":{"id":"stop","type":"result","result":{"stopped":true}}}
+]

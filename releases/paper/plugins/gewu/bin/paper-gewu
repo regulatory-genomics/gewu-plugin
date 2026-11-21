@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -d "$dir/lib" ]; then
+  export PYTHONPATH="$dir/lib"
+fi
+exec python3 "$dir/adapter.py"

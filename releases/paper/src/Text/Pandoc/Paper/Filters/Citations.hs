@@ -1,0 +1,186 @@
+{-# LANGUAGE OverloadedStrings #-}
+module Text.Pandoc.Paper.Filters.Citations
+    ( citeproc
+    ) where
+
+import Control.Monad (when)
+import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as BL
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import qualified Data.Set as S
+import qualified Data.Map as M
+import System.Directory (doesFileExist)
+import System.IO
+import Network.HTTP.Client (parseRequest, httpLbs, responseBody, requestHeaders, responseStatus)
+import Network.HTTP.Types.Status (ok200, statusMessage)
+import Network.HTTP.Client.TLS (newTlsManager)
+import Text.BibTeX.Entry (identifier)
+import Control.Monad.IO.Class
+import qualified Text.BibTeX.Parse as P
+import qualified Text.BibTeX.Format as F
+import Data.ByteString.Encoding (decode)
+import Data.Functor.Identity (runIdentity)
+import Text.Parsec (parse)
+import Text.Pandoc
+import Text.Pandoc.Walk (walkM)
+import Text.Pandoc.Builder
+import Text.Pandoc.Shared (stringify)
+import Text.Pandoc.Citeproc (processCitations)
+import Control.Monad.State.Lazy (modify, execState)
+import Text.Printf (printf)
+import Debug.Trace
+import Control.Exception (evaluate)
+import Control.DeepSeq (force)
+
+import Text.Pandoc.Paper.CSL
+
+data CitationID = DOI T.Text
+                | PMID T.Text
+                deriving (Eq, Ord, Show)
+
+-- | Download a reference entry from the web.
+-- Read BibTeX from an input string and return a Pandoc document. The document will have only metadata, with an empty body. The metadata will contain a references field with the bibliography entries, and a nocite field with the wildcard `[@*]`.
+getReferences :: [CitationID] -> PandocIO Pandoc
+getReferences ids = do
+    r <- T.unlines <$> mapM f ids
+    traceM $ T.unpack r
+    readBibTeX def r
+  where
+    f (DOI i) = liftIO (getBibTexByDoi i) >>= \case
+        Left err -> error $ B.unpack err
+        Right x -> return x
+    f _ = undefined
+
+-- | Process citations in a document. This will automatically download references
+-- from the web and add them to the bibliography.
+citeproc :: Maybe FilePath -- ^ Path to the bibliography file.
+         -> Maybe B.ByteString
+         -> Pandoc
+         -> PandocIO Pandoc
+citeproc refFl cslData (Pandoc meta main) = do
+    let supplement = case lookupMeta "supplement" meta of
+            Just (MetaBlocks blk) -> blk
+            _ -> []
+        citeKeys = getCiteKeyMap meta
+    (main', refs) <- processBlocks refFl cslData $ resolveCiteKeys citeKeys main
+    (supplement', supp_refs) <- processBlocks refFl cslData $ resolveCiteKeys citeKeys supplement
+
+    let meta' = setMeta "refs" (MetaBlocks refs) $
+            setMeta "supp_refs" (MetaBlocks supp_refs) $
+            setMeta "supplement" (MetaBlocks supplement') $ meta
+    return $ Pandoc meta' main'
+
+-- | Read the @citation-key@ metadata field: a map from citation keys to
+-- bibliography identifiers, e.g. @{id1: "doi:10.1038/xxx"}@. Citations written
+-- as @[@cite:id1]@ are pure aliases and are replaced by the mapped identifier
+-- before any downstream processing.
+getCiteKeyMap :: Meta -> M.Map T.Text T.Text
+getCiteKeyMap meta = case lookupMeta "citation-key" meta of
+    Just (MetaMap m) -> M.fromList [(k, stringify v) | (k, v) <- M.toList m]
+    _ -> M.empty
+
+-- | Replace citation keys of the form @cite:key@ with their mapped
+-- identifiers. A key without an entry in the map is a build error.
+resolveCiteKeys :: M.Map T.Text T.Text -> [Block] -> [Block]
+resolveCiteKeys citeKeys = runIdentity . walkM f
+  where
+    f (Cite cs il) = do
+        cs' <- mapM g cs
+        return $ Cite cs' il
+    f x = return x
+    g c
+        | Just key <- T.stripPrefix "cite:" (citationId c) =
+            case M.lookup key citeKeys of
+                Just refId -> return c{citationId = refId}
+                Nothing -> error $ "Unknown citation key: @" <> T.unpack (citationId c)
+        | otherwise = return c
+
+processBlocks :: Maybe FilePath -- ^ Path to the bibliography file.
+              -> Maybe B.ByteString
+              -> [Block]
+              -> PandocIO ([Block], [Block])
+processBlocks refFl cslData blks = do
+    let doc = flip Pandoc blks $
+            setMeta "link-citations" (MetaBool True) $
+            setMeta "linkBibliography" (MetaBool False) nullMeta
+    Pandoc (Meta meta) d <- case cslData of
+        Nothing -> addCitations doc
+        Just style -> withStyle style doc addCitations
+    let refs = case M.lookup "refs" meta of
+            Just (MetaBlocks bs) -> bs
+            _ -> []
+    return (d, refs)
+  where
+    addCitations doc = do
+        let refIDs = collectRefs doc
+        case refFl of
+            Just fl -> do
+                idsToCollect <- liftIO $ doesFileExist fl >>= \case
+                    True -> do
+                        contents <- withFile fl ReadMode $ \h -> evaluate . force =<< hGetContents h
+                        return $ S.difference refIDs $ S.fromList $ getBibIds contents
+                    False -> return refIDs
+
+                when (S.size idsToCollect > 0) $ report $ Fetching $ T.pack $
+                    printf "%d references from the web" (S.size idsToCollect)
+                refs <- getReferences (S.toList idsToCollect) >>= writeBibTeX def
+                liftIO $ withFile fl AppendMode $ \h -> T.hPutStr h refs
+                processCitations $ placeRefsInMeta "refs" $ addBibliography fl doc
+            Nothing -> do
+                when (S.size refIDs > 0) $ report $ Fetching $ T.pack $
+                    printf "%d references from the web" (S.size refIDs)
+                refs <- getReferences (S.toList refIDs)
+                processCitations $ placeRefsInMeta "refs" doc <> refs
+
+
+-- | Put the references in the metadata using:
+-- $refAnchor: |
+--   # References
+--   ::: {#refs}
+--   :::
+placeRefsInMeta :: T.Text -> Pandoc -> Pandoc
+placeRefsInMeta refAnchor (Pandoc (Meta meta) blk) = Pandoc (Meta newMeta) blk
+  where
+    -- add unumbered header
+    header = Header 1 ("", ["unnumbered"], []) [Str "References"]
+    div = Div ("refs", [], []) []
+    newMeta = M.insert refAnchor (MetaBlocks [header, div]) meta
+
+addBibliography :: FilePath -> Pandoc -> Pandoc
+addBibliography fl (Pandoc (Meta meta) blks) = Pandoc meta' blks
+  where
+    meta' = Meta $ M.insert "bibliography" (MetaString $ T.pack fl) meta
+
+collectRefs :: Pandoc -> S.Set CitationID
+collectRefs doc = execState (walkM f doc) S.empty
+  where
+    f x@(Cite cs _) = mapM_ g cs >> return x
+    f x = return x
+    g c | isRefId (citationId c) = modify (S.insert (DOI $ citationId c))
+        | otherwise = return ()
+    isRefId x = "doi:" `T.isPrefixOf` x
+    
+getBibTexByDoi :: T.Text -> IO (Either B.ByteString T.Text)
+getBibTexByDoi doi = do
+    manager <- newTlsManager
+    request <- parseRequest url
+    response <- httpLbs request{requestHeaders=[("Accept", "application/x-bibtex")]} manager
+    let status = responseStatus response
+    return $ if status == ok200
+        then Right $ changeId doi $ T.strip $ decode utf8 $ BL.toStrict $ responseBody response
+        else Left $ statusMessage status
+  where
+    url = baseUrl <> T.unpack (T.drop 4 doi)
+    baseUrl = "https://doi.org/"
+
+changeId :: T.Text -> T.Text -> T.Text
+changeId newId input = case parse P.entry "bibtex" (T.unpack input) of
+    Left err -> error $ show err
+    Right r -> T.pack $ F.entry $ r{identifier=T.unpack newId}
+
+-- | Get all bibliography ids from a bibtex file
+getBibIds :: String -> [CitationID]
+getBibIds input = case parse (P.skippingLeadingSpace P.file) "bibtex" input of
+    Left err -> error $ show err
+    Right r -> map (DOI . T.pack . identifier) r

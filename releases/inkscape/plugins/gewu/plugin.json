@@ -1,0 +1,27 @@
+{
+  "apiVersion": "gewu.plugin/v1",
+  "id": "inkscape",
+  "version": "0.1.0",
+  "title": "Inkscape",
+  "scope": "resource",
+  "backend": {"connector": "gewu-stdio", "config": {"entry": "bin/inkscape-gewu"}},
+  "settingsSchema": {"type": "object", "additionalProperties": false, "properties": {
+    "inkscapeExecutable": {"type": "string", "minLength": 1},
+    "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 120},
+    "nativeSessionDirectory": {"type": "string", "minLength": 1},
+    "nativeRemote": {"type":"object", "additionalProperties":false, "required":["host","python","script","session"], "properties":{
+      "host":{"type":"string","minLength":1}, "python":{"type":"string","minLength":1},
+      "script":{"type":"string","minLength":1}, "session":{"type":"string","minLength":1},
+      "sshConfig":{"type":"string","minLength":1}
+    }}
+  }},
+  "views": [
+    {"id": "figure", "title": "Figure layout", "placement": "main", "kind": "webview",
+      "entry": "web/index.html", "resourceTypes": ["inkscape.document"], "stateSchema": {
+        "type": "object", "properties": {"zoom": {"type": "number", "minimum": 0.5, "maximum": 3},
+          "page": {"type": "integer", "minimum": 1}, "selection": {"type": "array", "items": {"type":"string"}, "maxItems": 100}},
+        "additionalProperties": false}},
+    {"id": "render", "title": "Figure preview", "placement": "sidebar", "kind": "builtin",
+      "renderer": "preview", "resourceTypes": ["inkscape.preview"]}
+  ]
+}
