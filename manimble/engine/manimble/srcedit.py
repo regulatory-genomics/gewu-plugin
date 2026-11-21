@@ -1,0 +1,2555 @@
+"""Source-code side of manimble: map on-screen edits back to Python edits.
+
+The worker reports, for every editable object, the stack of call sites that
+created it and the layout calls (move_to, shift, next_to, set, ...) that shaped
+it.  This module walks the AST of the user's files to turn "move this 0.4 to the
+right" or "change this string" into minimal textual patches.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import shutil
+import tokenize
+from dataclasses import dataclass, field
+
+
+# ------------------------------------------------------------------ helpers
+
+def fmt(x: float, nd: int = 3) -> str:
+    s = f"{x:.{nd}f}".rstrip("0").rstrip(".")
+    return "0" if s in ("", "-0") else s
+
+
+def py_str(s: str) -> str:
+    return json.dumps(s, ensure_ascii=False)
+
+
+# A text box, on the line of its string literal: `# manimble box w=<width>` is the wrap width (manim units; the
+# text is wrapped there by soft line breaks, written " \n" (the space is invisible at the end of a line) so they
+# can be undone). With h=, x= and y= (top-left corner, y up) it is a text frame like PowerPoint's: the box keeps
+# its size whatever is typed, and the text sits inside it by its alignment (v=top|mid: the vertical anchor).
+BOX_RE = re.compile(r"# manimble box w=(\d+(?:\.\d+)?)")
+BOX_TAG_RE = re.compile(r"# manimble box((?: [whxyv]=-?[\d.]+| v=(?:top|mid))+)")
+BOX_PAD = 0.1          # the text's inset from the frame's edges (manim units)
+
+
+def parse_box_tag(line: str) -> dict | None:
+    """{w, h, x, y (floats), v (str)} from a `# manimble box` comment, whichever keys it carries."""
+    m = BOX_TAG_RE.search(line)
+    if not m:
+        return None
+    out: dict = {}
+    for tok in m.group(1).split():
+        k, v = tok.split("=", 1)
+        out[k] = v if k == "v" else float(v)
+    return out
+
+
+def box_tag(fields: dict) -> str:
+    parts = [f"w={fmt(fields['w'], 3)}"]
+    for k in ("h", "x", "y"):
+        if fields.get(k) is not None:
+            parts.append(f"{k}={fmt(fields[k], 3)}")
+    if fields.get("v"):
+        parts.append(f"v={fields['v']}")
+    return "# manimble box " + " ".join(parts)
+
+
+def unwrap_soft(s: str) -> str:
+    return s.replace(" \n", " ")
+
+
+def wrap_soft(s: str, width: float, measure) -> str:
+    """Greedy word wrap of each paragraph of s to `width`, measure(line) giving the same unit; words wider
+    than the box keep a line of their own."""
+    out = []
+    for para in unwrap_soft(s).split("\n"):
+        words = para.split(" ")
+        lines = [words[0]]
+        for w in words[1:]:
+            if lines[-1].strip() and w and measure(lines[-1] + " " + w) > width:
+                lines.append(w)
+            else:
+                lines[-1] += " " + w
+        out.append(" \n".join(lines))
+    return "\n".join(out)
+
+
+def _line_tokens(src: "Src", ln: int) -> list:
+    try:
+        toks = list(tokenize.tokenize(io.BytesIO(src.data).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return []
+    return [t for t in toks if t.start[0] == ln]
+
+
+def py_tex(s: str, raw: bool) -> str:
+    """Literal for a LaTeX string; raw (r"...") when that is safe."""
+    if raw and '"' not in s and "\n" not in s and not s.endswith("\\") and "\r" not in s:
+        return 'r"' + s + '"'
+    return py_str(s)
+
+
+def vec_expr(x: float, y: float) -> str:
+    # A literal vector needs no RIGHT/UP names, so it works in decks that import
+    # only what they use instead of `from manim import *`.
+    return f"({fmt(x)}, {fmt(y)}, 0)"
+
+
+@dataclass
+class Edit:
+    rel: str
+    start: int
+    end: int
+    text: str
+
+
+class Src:
+    def __init__(self, rel: str, data: bytes):
+        self.rel = rel
+        self.data = data
+        self.tree = ast.parse(data)
+        self.parent: dict = {}
+        for n in ast.walk(self.tree):
+            for c in ast.iter_child_nodes(n):
+                self.parent[c] = n
+        self.line_starts = [0]
+        for i, b in enumerate(data):
+            if b == 10:
+                self.line_starts.append(i + 1)
+        self._calls = None
+        self._literals = None
+
+    def literals(self, value: str) -> list:
+        """The string constants equal to `value` (docstrings and other bare expression statements excluded),
+        from an index built once per parse: the planner asks for one literal after another."""
+        if self._literals is None:
+            idx: dict = {}
+            for n in ast.walk(self.tree):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str) and not isinstance(self.parent.get(n), ast.Expr):
+                    idx.setdefault(n.value, []).append(n)
+            self._literals = idx
+        return self._literals.get(value, [])
+
+    def off(self, line: int, col: int) -> int:
+        return self.line_starts[line - 1] + col
+
+    def span(self, node) -> tuple[int, int]:
+        return self.off(node.lineno, node.col_offset), self.off(node.end_lineno, node.end_col_offset)
+
+    def text(self, node) -> str:
+        a, b = self.span(node)
+        return self.data[a:b].decode("utf-8")
+
+    def find_call(self, pos):
+        # Python narrows the CALL position of a chained method call to start at the
+        # method name, so identify the node by where it ends (unique among calls).
+        l, c, el, ec = pos
+        if self._calls is None:
+            self._calls = {}
+            for n in ast.walk(self.tree):
+                if isinstance(n, ast.Call):
+                    self._calls[(n.end_lineno, n.end_col_offset)] = n
+        return self._calls.get((el, ec))
+
+    def enclosing(self, node, types):
+        n = self.parent.get(node)
+        while n is not None and not isinstance(n, types):
+            n = self.parent.get(n)
+        return n
+
+    def chain_top(self, call):
+        node = call
+        while True:
+            p = self.parent.get(node)
+            if isinstance(p, ast.Attribute) and p.value is node:
+                pp = self.parent.get(p)
+                if isinstance(pp, ast.Call) and pp.func is p:
+                    node = pp
+                    continue
+            return node
+
+    def in_loop(self, node) -> bool:
+        n = self.parent.get(node)
+        while n is not None and not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(n, (ast.For, ast.While, ast.ListComp, ast.GeneratorExp, ast.SetComp, ast.DictComp)):
+                return True
+            n = self.parent.get(n)
+        return False
+
+
+class Project:
+    def __init__(self, deck_dir: str):
+        self.dir = os.path.realpath(deck_dir)
+        self._cache: dict = {}
+        self._found: dict = {}          # rel -> the slides last found in it, kept while it does not parse
+
+    def py_files(self):
+        return sorted(f for f in os.listdir(self.dir) if f.endswith(".py"))
+
+    def read(self, rel: str) -> bytes:
+        with open(os.path.join(self.dir, rel), "rb") as fh:
+            return fh.read()
+
+    def write(self, rel: str, data: bytes | None):
+        path = os.path.join(self.dir, rel)
+        if data is None:                           # undo of a file creation
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            return
+        tmp = path + ".manimble.tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+
+    def src(self, rel: str) -> Src:
+        data = self.read(rel)
+        key = hashlib.sha1(data).hexdigest()
+        hit = self._cache.get(rel)
+        if hit and hit[0] == key:
+            return hit[1]
+        s = Src(rel, data)
+        self._cache[rel] = (key, s)
+        return s
+
+    def file_hash(self, rel: str) -> str:
+        return hashlib.sha1(self.read(rel)).hexdigest()
+
+    # ---------------------------------------------------------- scenes
+    def scenes(self):
+        """[(name, rel, line)] for every class with a construct() method.
+
+        A file that does not parse (half written by an editor or an agent, or with a typo) keeps the slides it had,
+        so they stay listed and show the error rather than vanishing."""
+        found = []
+        for rel in self.py_files():
+            try:
+                tree = self.src(rel).tree
+            except SyntaxError:
+                found += self._found.get(rel, [])
+                continue
+            except OSError:                         # removed while listing
+                continue
+            mine = [(node.name, rel, node.lineno, node.end_lineno) for node in tree.body
+                    if isinstance(node, ast.ClassDef)
+                    and any(isinstance(b, ast.FunctionDef) and b.name == "construct" for b in node.body)]
+            self._found[rel] = mine
+            found += mine
+        order_file = os.path.join(self.dir, "order.txt")
+        if os.path.exists(order_file):
+            with open(order_file, encoding="utf-8") as fh:
+                order = fh.read().split()
+            idx = {n: i for i, n in enumerate(order)}
+            found.sort(key=lambda t: (idx.get(t[0], 10**6), t[1], t[2]))
+        return found
+
+    # ------------------------------------------------------- applying
+    def apply(self, edits: list[Edit]) -> dict:
+        """Apply edits; return {rel: (before, after)}."""
+        by_file: dict = {}
+        for e in edits:
+            by_file.setdefault(e.rel, []).append(e)
+        out = {}
+        for rel, es in by_file.items():
+            try:
+                before = self.read(rel)
+            except FileNotFoundError:
+                before = None                      # a file this edit creates
+            data = bytearray(before or b"")
+            for e in sorted(es, key=lambda e: (e.start, e.end), reverse=True):
+                data[e.start:e.end] = e.text.encode("utf-8")
+            after = bytes(data)
+            if rel.endswith(".py"):
+                ast.parse(after)  # refuse to write something that does not parse
+            out[rel] = (before, after)
+        for rel, (_, after) in out.items():
+            self.write(rel, after)
+        return out
+
+    # ---------------------------------------------------- name lookups
+    def top_level_assigns(self, name: str):
+        hits = []
+        for rel in self.py_files():
+            try:
+                s = self.src(rel)
+            except SyntaxError:
+                continue
+            for node in s.tree.body:
+                if isinstance(node, ast.Assign) and len(node.targets) == 1:
+                    t = node.targets[0]
+                    if isinstance(t, ast.Name) and t.id == name:
+                        hits.append((s, node.value))
+        return hits
+
+    def count_uses(self, name: str) -> int:
+        n = 0
+        for rel in self.py_files():
+            try:
+                s = self.src(rel)
+            except SyntaxError:
+                continue
+            for node in ast.walk(s.tree):
+                if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+                    n += 1
+        return n
+
+    def find_literals(self, value, scope_rel=None):
+        """String constants equal to value (docstrings excluded)."""
+        hits = []
+        if not isinstance(value, str):
+            return hits
+        for rel in self.py_files():
+            try:
+                s = self.src(rel)
+            except SyntaxError:
+                continue
+            hits.extend((s, node) for node in s.literals(value))
+        return hits
+
+
+# ------------------------------------------------------- argument tracing
+
+@dataclass
+class Target:
+    kind: str                 # "node" | "missing" | "computed"
+    src: Src | None = None
+    node: object = None       # the AST node that supplies the value
+    call: object = None       # for "missing": call that should receive a kwarg
+    param: str = ""
+    frame_index: int = 0
+    via: dict | None = None   # shared constant info {name, rel, uses, local_node}
+    note: str = ""
+
+
+def _params(fdef):
+    a = fdef.args
+    return [x.arg for x in (a.posonlyargs + a.args)], [x.arg for x in a.kwonlyargs]
+
+
+def _arg_of(call: ast.Call, name, pos):
+    for kw in call.keywords:
+        if kw.arg is not None and kw.arg == name:
+            return kw.value
+    if pos is not None:
+        npos = 0
+        for i, a in enumerate(call.args):
+            if isinstance(a, ast.Starred):
+                return None
+            if i == pos:
+                return a
+    return None
+
+
+def locate(project: Project, frames: list, fi: int, name, pos, resolve_globals=True) -> Target:
+    """Find the source node supplying an argument of the call in frames[fi].
+
+    Follows the value outward through wrapper functions (e.g. label(text, size)
+    forwards its parameters to Text), then resolves module-level constants.
+    """
+    try:
+        fr = frames[fi]
+        src = project.src(fr["file"])
+        call = src.find_call(fr["pos"])
+    except Exception:
+        return Target("computed", note="call site not found")
+    if call is None:
+        return Target("computed", note="call site not found")
+    node = _arg_of(call, name, pos)
+    while True:
+        if node is None and name and fi + 1 < len(frames):
+            # a helper forwarding **kwargs to the call: the value belongs in the caller
+            fdef = src.enclosing(call, (ast.FunctionDef, ast.AsyncFunctionDef))
+            kwname = fdef.args.kwarg.arg if fdef is not None and fdef.args.kwarg else None
+            if kwname and any(k.arg is None and isinstance(k.value, ast.Name) and k.value.id == kwname for k in call.keywords):
+                outer = frames[fi + 1]
+                try:
+                    osrc = project.src(outer["file"])
+                    ocall = osrc.find_call(outer["pos"])
+                except Exception:
+                    ocall = None
+                fname = None if ocall is None else (ocall.func.id if isinstance(ocall.func, ast.Name) else getattr(ocall.func, "attr", None))
+                if ocall is not None and fname == fdef.name:
+                    fi += 1
+                    src, call = osrc, ocall
+                    node = _arg_of(ocall, name, None)
+                    continue
+        if node is None:
+            # argument omitted here: maybe it was a defaulted parameter of the caller
+            return Target("missing", src=src, call=call, param=name or "", frame_index=fi)
+        if isinstance(node, ast.Name):
+            fdef = src.enclosing(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if fdef is not None:
+                pos_params, kw_params = _params(fdef)
+                if node.id in pos_params or node.id in kw_params:
+                    if fi + 1 >= len(frames):
+                        return Target("computed", note="value comes from a parameter")
+                    outer = frames[fi + 1]
+                    try:
+                        osrc = project.src(outer["file"])
+                        ocall = osrc.find_call(outer["pos"])
+                    except Exception:
+                        ocall = None
+                    if ocall is None:
+                        return Target("computed", note="caller not found")
+                    fname = ocall.func.id if isinstance(ocall.func, ast.Name) else getattr(ocall.func, "attr", None)
+                    if fname != fdef.name:
+                        return Target("computed", note="indirect call")
+                    idx = pos_params.index(node.id) if node.id in pos_params else None
+                    if idx is not None and isinstance(ocall.func, ast.Attribute) and pos_params and pos_params[0] in ("self", "cls"):
+                        idx -= 1
+                    nxt = _arg_of(ocall, node.id, idx)
+                    fi += 1
+                    src, call = osrc, ocall
+                    name = node.id
+                    node = nxt
+                    pos = idx
+                    continue
+        break
+    # node is a real expression in frames[fi]
+    via = None
+    if isinstance(node, ast.Name):
+        resolved = _resolve_name(project, src, node)
+        if resolved is not None:
+            rsrc, rnode = resolved
+            via = {"name": node.id, "rel": rsrc.rel, "uses": project.count_uses(node.id),
+                   "local": (src, node)}
+            if resolve_globals:
+                return Target("node", src=rsrc, node=rnode, frame_index=fi, via=via)
+    return Target("node", src=src, node=node, frame_index=fi, via=via)
+
+
+def _resolve_name(project: Project, src: Src, name_node: ast.Name):
+    """Constant assigned to a Name: local assignment, then module level anywhere."""
+    fdef = src.enclosing(name_node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    if fdef is not None:
+        local = []
+        for n in ast.walk(fdef):
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) \
+                    and n.targets[0].id == name_node.id:
+                local.append(n.value)
+        if len(local) == 1 and isinstance(local[0], ast.Constant):
+            return src, local[0]
+        if local:
+            return None
+    hits = project.top_level_assigns(name_node.id)
+    if len(hits) == 1 and isinstance(hits[0][1], ast.Constant):
+        return hits[0]
+    return None
+
+
+# ------------------------------------------------------------- the planner
+
+class Planner:
+    def __init__(self, project: Project):
+        self.p = project
+
+    # ------------------------------------------------------------ text
+    def text_target(self, obj: dict, siblings: int = 1) -> Target:
+        """Where the string content of a text/formula object lives."""
+        t = locate(self.p, obj["frames"], 0, "text" if obj["kind"] == "text" else None, 0)
+        value = obj["value"]
+        if obj["kind"] == "text":
+            call_src = self.p.src(obj["frames"][0]["file"])
+            call = call_src.find_call(obj["frames"][0]["pos"])
+            if call is not None and _func_name(call) == "Paragraph" and call.args and \
+                    all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in call.args):
+                if "\n".join(a.value for a in call.args) == value:
+                    return Target("node", src=call_src, node=call, frame_index=0, note="paragraph")
+        if obj["kind"] == "tex":
+            call_src = self.p.src(obj["frames"][0]["file"])
+            call = call_src.find_call(obj["frames"][0]["pos"])
+            if call is not None and sum(1 for a in call.args if not isinstance(a, ast.Starred)) > 1:
+                return Target("computed", note="formula built from several strings")
+        if t.kind == "node" and isinstance(t.node, ast.Constant) and isinstance(t.node.value, str):
+            if t.node.value == value:
+                return t
+        # value-based fallback: find the one literal holding this text
+        hits = self.p.find_literals(value)
+        if len(hits) == 1:
+            s, n = hits[0]
+            return Target("node", src=s, node=n, frame_index=0, via=None, note="matched by value")
+        if len(hits) > 1:
+            pick = self._disambiguate(obj, hits)
+            if pick is not None:
+                return pick
+            return Target("computed", note=f"{len(hits)} identical literals; ambiguous")
+        return Target("computed", note="generated by code (not a plain string)")
+
+    def _disambiguate(self, obj: dict, hits):
+        """Several identical literals: keep those the creating code can actually reach."""
+        fr = obj["frames"][-1]
+        src = self.p.src(fr["file"])
+        call = src.find_call(fr["pos"])
+        if call is None:
+            return None
+        fdef = src.enclosing(call, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if fdef is None:
+            return None
+        # (a) literals written inside the creating function itself
+        local = [h for h in hits if h[0] is src and h[1] in set(ast.walk(fdef))]
+        if len(local) == 1:
+            s, n = local[0]
+            return Target("node", src=s, node=n, frame_index=0, note="matched by value")
+        # (b) literals inside module constants that the creating function refers to
+        names = {n.id for n in ast.walk(fdef) if isinstance(n, ast.Name)}
+        via_const = []
+        for h in hits:
+            s, n = h
+            top = n
+            while s.parent.get(top) is not None and not isinstance(s.parent.get(top), ast.Module):
+                top = s.parent[top]
+            if isinstance(top, ast.Assign) and len(top.targets) == 1 and isinstance(top.targets[0], ast.Name) \
+                    and top.targets[0].id in names:
+                via_const.append((h, top.targets[0].id))
+        if len(via_const) == 1:
+            (s, n), cname = via_const[0]
+            via = {"name": cname, "rel": s.rel, "uses": self.p.count_uses(cname), "local": None}
+            return Target("node", src=s, node=n, frame_index=0, via=via, note="matched by value")
+        return None
+
+    def plan_text(self, obj: dict, new: str, shared: bool = True, styles: dict | None = None) -> list[Edit]:
+        """The text retyped as `new`. `styles` sets the formatting of its characters, for the kinds it names
+        (CHAR_STYLES): {"italic": [[start, end], ...], "color": [[start, end, "#RRGGBB"], ...], ...} in characters
+        of `new`; the characters outside a kind's ranges lose it. Kinds not named keep their characters."""
+        styles = styles or {}
+        t = self.text_target(obj)
+        if t.kind != "node":
+            raise EditError(t.note or "this text is generated by code and cannot be edited directly")
+        node, src = t.node, t.src
+        if t.note == "paragraph":            # Paragraph("line", "line", ...): one literal per line
+            a = src.span(node.args[0])[0]
+            b = src.span(node.args[-1])[1]
+            edits = [Edit(src.rel, a, b, ", ".join(py_str(line) for line in new.split("\n")))] \
+                if new != obj["value"] else []
+            # Paragraph hands t2s / t2w / t2c on to the Text of its lines joined by newlines
+            edits += _shift_text_ranges(src, node, obj["value"], new, skip=_t2_keys(styles)) if new != obj["value"] else []
+            edits += _set_t2(src, node, new, styles, obj)
+            return self._plan_char_decorations(obj, obj["value"], new, styles, edits)
+        if styles and t.via:
+            raise EditError(f"the text is the shared constant {t.via['name']}; part of it cannot be formatted")
+        if t.via and not shared and t.via.get("local"):
+            src, node = t.via["local"]
+        old_src = src.text(node)
+        raw = bool(re.match(r"^[rR]", old_src.lstrip("(").lstrip()))
+        lit = py_tex(new, raw or obj["kind"] == "tex") if obj["kind"] == "tex" else py_str(new)
+        a, b = src.span(node)
+        edits = [Edit(src.rel, a, b, lit)] if not styles or new != getattr(node, "value", None) else []
+        call = src.parent.get(node)
+        if obj["kind"] == "text" and isinstance(call, ast.Call) and call.args and call.args[0] is node:
+            edits += _shift_text_ranges(src, call, node.value, new, skip=_t2_keys(styles))
+            edits += _set_t2(src, call, new, styles, obj)
+        elif _t2_keys(styles):
+            raise EditError("part of a text can only be formatted when its string is written in its Text(...) call")
+        if obj["kind"] != "text" or t.via:
+            return edits
+        return self._plan_char_decorations(obj, obj["value"], new, styles, edits)
+
+    # ------------------------------------------------------ text box width
+    def _box_line(self, obj: dict):
+        """(src, line number) of the text's string literal, where its `# manimble box w=` comment lives."""
+        t = self.text_target(obj)
+        if t.kind != "node":
+            raise EditError(t.note or "this text is generated by code and cannot be wrapped")
+        if t.via:
+            raise EditError(f"the text is the shared constant {t.via['name']}; it cannot be wrapped for one object")
+        return t.src, t.node.end_lineno
+
+    def box_info(self, obj: dict) -> dict | None:
+        """The text's `# manimble box` fields (w, and for a frame h, x, y, v), if it has the comment."""
+        try:
+            src, ln = self._box_line(obj)
+        except EditError:
+            return None
+        end = src.line_starts[ln] if ln < len(src.line_starts) else len(src.data)
+        return parse_box_tag(src.data[src.line_starts[ln - 1]:end].decode("utf-8"))
+
+    def frame_box(self, obj: dict) -> dict | None:
+        """The text frame {x, y, w, h, v} (manim units, y up, x/y its top-left corner) when the box is one."""
+        info = self.box_info(obj)
+        if not info or any(info.get(k) is None for k in ("w", "h", "x", "y")):
+            return None
+        return {"x": info["x"], "y": info["y"], "w": info["w"], "h": info["h"], "v": info.get("v") or "top"}
+
+    def box_width(self, obj: dict) -> float | None:
+        """The width (manim units) the text wraps to: the box width from its side handles, or the inside of its frame."""
+        info = self.box_info(obj)
+        if not info or info.get("w") is None:
+            return None
+        return max(0.05, info["w"] - 2 * BOX_PAD) if self.frame_box(obj) else info["w"]
+
+    def plan_box(self, obj: dict, **fields) -> list[Edit]:
+        """Write the text's `# manimble box` comment with these fields changed (the rest kept)."""
+        src, ln = self._box_line(obj)
+        a = src.line_starts[ln - 1]
+        b = src.line_starts[ln] - 1 if ln < len(src.line_starts) else len(src.data)
+        line = src.data[a:b].decode("utf-8")
+        merged = dict(parse_box_tag(line) or {})
+        merged.update({k: v for k, v in fields.items() if v is not None})
+        if merged.get("w") is None:
+            raise EditError("a text box needs a width")
+        tag = box_tag(merged)
+        m = BOX_TAG_RE.search(line)
+        if m:
+            s, e = (len(line[:i].encode("utf-8")) for i in m.span())
+            return [Edit(src.rel, a + s, a + e, tag)]
+        comment = next((tok for tok in _line_tokens(src, ln) if tok.type == tokenize.COMMENT), None)
+        add = (" " + tag[2:]) if comment is not None and comment.string.startswith("# manimble") else "  " + tag
+        return [Edit(src.rel, b, b, add)]
+
+    def plan_wrap(self, obj: dict, new: str, width: float, styles: dict | None = None, **fields) -> list[Edit]:
+        """The text re-wrapped (`new`) plus the `# manimble box w=<width>` comment that remembers its box
+        (`fields`: other box fields to change along, such as x when the frame's left side was dragged)."""
+        edits = self.plan_text(obj, new, shared=False, styles=styles) if new != obj["value"] or styles else []
+        return edits + self.plan_box(obj, w=width, **fields)
+
+    # ------------------------------------------------------ simple args
+    def plan_arg(self, obj: dict, name: str, literal: str, outermost: bool = False) -> list[Edit]:
+        """Set a keyword-style argument (font_size, color, weight ...) of the constructor."""
+        t = locate(self.p, obj["frames"], 0, name_map(obj, name), None, resolve_globals=False)
+        last = len(obj["frames"]) - 1
+        if outermost and t.kind in ("node", "missing") and t.frame_index != last:
+            raise EditError(f"{name} is fixed inside a helper function ({obj['frames'][t.frame_index]['func']}); "
+                            "it cannot be changed for a single object")
+        if t.kind == "node":
+            a, b = t.src.span(t.node)
+            return [Edit(t.src.rel, a, b, literal)]
+        if t.kind == "missing":
+            return [insert_kwarg(t.src, t.call, t.param or name, literal)]
+        raise EditError("cannot trace this setting back to the source")
+
+    def plan_font(self, obj: dict, ctor_value: float) -> list[Edit]:
+        """Set the constructor font size (what the source says, not the on-screen size)."""
+        v = max(4.0, ctor_value)
+        lit = str(int(round(v))) if abs(v - round(v)) < 0.06 else fmt(v, 1)
+        return self.plan_arg(obj, "font_size", lit)
+
+    def plan_font_family(self, obj: dict, family: str, shared: bool) -> list[Edit]:
+        """Font family: usually a deck-wide constant (FONT), so edit that when allowed."""
+        t = locate(self.p, obj["frames"], 0, "font", None, resolve_globals=True)
+        if t.kind == "node":
+            if t.via and not shared:
+                raise EditError(f"the font is the shared constant {t.via['name']}; tick 'change everywhere' to change it")
+            if not t.via and t.frame_index != len(obj["frames"]) - 1:
+                raise EditError("the font is fixed inside a helper function and cannot be changed for one object")
+            if isinstance(t.node, ast.Constant) and isinstance(t.node.value, str):
+                a, b = t.src.span(t.node)
+                return [Edit(t.src.rel, a, b, py_str(family))]
+            a, b = t.src.span(t.node)
+            return [Edit(t.src.rel, a, b, py_str(family))]
+        if t.kind == "missing":
+            return [insert_kwarg(t.src, t.call, "font", py_str(family))]
+        raise EditError("cannot trace the font back to the source")
+
+    def plan_endpoints(self, obj: dict, a, b) -> list[tuple[str, list[Edit]]]:
+        """New start/end (manim units) for a Line/Arrow via put_start_and_end_on."""
+        def tup(p):
+            return f"({fmt(p[0])}, {fmt(p[1])}, 0)"
+        attempts: list[tuple[str, list[Edit]]] = []
+        own = [e for e in obj["events"] if e["own"] and e["method"] in
+               ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "scale", "set",
+                "put_start_and_end_on", "set_width", "set_height", "rotate")]
+        last = own[-1] if own else None
+        if last and last["method"] == "put_start_and_end_on" and len(last["args"]) >= 2:
+            edits = []
+            for i, p in enumerate((a, b)):
+                t = locate(self.p, last["frames"], 0, "start" if i == 0 else "end", i, resolve_globals=False)
+                if t.kind != "node" or t.frame_index != len(last["frames"]) - 1 or t.via is not None:
+                    edits = []
+                    break
+                lo, hi = t.src.span(t.node)
+                edits.append(Edit(t.src.rel, lo, hi, tup(p)))
+            if edits:
+                attempts.append(("adjusted the put_start_and_end_on() call", edits))
+        text = f".put_start_and_end_on({tup(a)}, {tup(b)})"
+        if last:
+            attempts.append(("appended .put_start_and_end_on() after the positioning", [self._append_chain(last["frames"], text)]))
+        attempts.append(("appended .put_start_and_end_on() where the line is created", [self._append_chain(obj["frames"], text)]))
+        return attempts
+
+    # where an end attached to an object sits on it, as the canvas names it -> the call that reads that point
+    ANCHOR_CALLS = {"UL": "get_corner(UL)", "UP": "get_top()", "UR": "get_corner(UR)", "LEFT": "get_left()",
+                    "ORIGIN": "get_center()", "RIGHT": "get_right()", "DL": "get_corner(DL)", "DOWN": "get_bottom()",
+                    "DR": "get_corner(DR)"}
+    LINE_CALLS = ("Line", "Arrow", "DoubleArrow", "DashedLine")
+    ROUND = ("Circle", "Ellipse", "Dot")                 # their corner anchors sit on the curve, at 45° (the canvas agrees)
+    ROUND_CORNERS = {"UR": "PI / 4", "UL": "3 * PI / 4", "DL": "5 * PI / 4", "DR": "7 * PI / 4"}
+
+    def anchor_point(self, obj: dict, at: str, rel: str, fn_line: int, before: int, named: dict):
+        """`var.get_corner(UR)` (and the edits naming the object, if it had no name) for a line end attached to
+        `obj` at `at`, read by a statement at line `before` of the function starting at `fn_line` in `rel`. The
+        object must be assigned in that function ahead of the statement and outside a loop; None otherwise.
+        `named` (id(obj) -> var) keeps a second end on the same object from naming it twice."""
+        call = self.ANCHOR_CALLS.get(at)
+        if call is None or obj.get("kind") == "line":
+            return None
+        try:
+            src, _, top, stmt = self._creation(obj)
+        except EditError:
+            return None
+        fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if (src.rel != rel or fdef is None or fdef.lineno != fn_line or stmt.end_lineno >= before
+                or src.enclosing(stmt, (ast.For, ast.AsyncFor, ast.While)) is not None):
+            return None
+        key = id(obj)
+        if obj.get("value") in self.ROUND and at in self.ROUND_CORNERS:   # on the curve, not the bounding box
+            call = f"point_at_angle({self.ROUND_CORNERS[at]})"
+        if key in named:
+            return f"{named[key]}.{call}", []
+        try:
+            var, edits = self._ensure_var(obj, src, top, stmt)
+        except EditError:
+            return None
+        named[key] = var
+        return f"{var}.{call}", edits
+
+    def line_end_site(self, obj: dict):
+        """(src, call, stmt) of the call whose first two arguments place a line's ends: its constructor
+        (`Arrow(a, b, ...)`) when nothing repositions it afterwards, or the `put_start_and_end_on(a, b)` that
+        does last. None when the ends are set some other way."""
+        try:
+            src, call, _, stmt = self._creation(obj)
+        except EditError:
+            return None
+        own = [e for e in obj["events"] if e["own"] and e["method"] in
+               ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "scale", "set", "set_x", "set_y",
+                "put_start_and_end_on", "set_width", "set_height", "rotate")]
+        if own:
+            last = own[-1]
+            fr = last["frames"][-1]
+            if last["method"] != "put_start_and_end_on" or fr["file"] != src.rel:
+                return None
+            call = src.find_call(fr["pos"])
+            if call is None or not isinstance(call.func, ast.Attribute) or call.func.attr != "put_start_and_end_on":
+                return None
+            stmt = call
+            while stmt is not None and not isinstance(stmt, ast.stmt):
+                stmt = src.parent.get(stmt)
+        elif _func_name(call) not in self.LINE_CALLS:
+            call = self._redrawn(call)           # `always_redraw(lambda: Arrow(a, b, ...))`: the call inside
+            if call is None:
+                return None
+        if stmt is None or len(call.args) < 2 or any(isinstance(a, ast.Starred) for a in call.args[:2]):
+            return None
+        return src, call, stmt
+
+    @classmethod
+    def _redrawn(cls, call):
+        """The line constructor inside `always_redraw(lambda: Arrow(a, b, ...).set_color(...))`, or None."""
+        if _func_name(call) != "always_redraw" or len(call.args) != 1 or not isinstance(call.args[0], ast.Lambda) \
+                or call.args[0].args.args:
+            return None
+        node = call.args[0].body
+        while isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
+            node = node.func.value
+        return node if isinstance(node, ast.Call) and _func_name(node) in cls.LINE_CALLS else None
+
+    def plan_line_ends(self, src: Src, call, ends: list) -> list[Edit]:
+        """New expressions for the first two arguments of `call` (see `line_end_site`); None keeps one as written."""
+        return [Edit(src.rel, *src.span(call.args[i]), e) for i, e in enumerate(ends) if e is not None]
+
+    def plan_redraw(self, src: Src, call) -> list[Edit]:
+        """Wrap the line made by `call` (see `line_end_site`) in `always_redraw(lambda: ...)`, so ends that read an
+        object (`box.get_right()`) follow it wherever it goes later, in every build and through animations. Nothing
+        when it is wrapped already, or its ends are set by a later `put_start_and_end_on`, or it is made in a loop
+        (the lambda would read the loop variable's last value)."""
+        if _func_name(call) not in self.LINE_CALLS or src.in_loop(call):
+            return []
+        top = src.chain_top(call)
+        lam = src.parent.get(top)
+        if isinstance(lam, ast.Lambda) and isinstance(src.parent.get(lam), ast.Call) \
+                and _func_name(src.parent.get(lam)) == "always_redraw":
+            return []
+        a, b = src.span(top)
+        return [Edit(src.rel, a, a, "always_redraw(lambda: "), Edit(src.rel, b, b, ")")]
+
+    def redrawn(self, obj: dict) -> set[str]:
+        """The variables read by a line made by `always_redraw(lambda: ...)` (it follows those objects); empty
+        for any other line."""
+        try:
+            _, call, _, _ = self._creation(obj)
+        except EditError:
+            return set()
+        if self._redrawn(call) is None:
+            return set()
+        return {n.id for n in ast.walk(call.args[0].body) if isinstance(n, ast.Name)}
+
+    # ----------------------------------------------------------- moving
+    def plan_move(self, obj: dict, dx: float, dy: float) -> list[tuple[str, list[Edit]]]:
+        attempts: list[tuple[str, list[Edit]]] = []
+        events = [e for e in obj["events"] if e["method"] in
+                  ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "arrange",
+                   "arrange_in_grid", "set_x", "set_y", "align_on_border")]
+        last = events[-1] if events else None
+        if last and last["own"] and last["method"] in ("move_to", "shift"):
+            try:
+                ed = self._rewrite_vector(last, dx, dy)
+                if ed:
+                    attempts.append((f"adjusted the {last['method']}() call", ed))
+            except EditError:
+                pass
+        if last and not last["own"]:
+            try:
+                ed = self._shift_statement(obj, last, dx, dy)
+                if ed:
+                    attempts.append(("added a shift() after the layout call", ed))
+            except EditError:
+                pass
+        if last and last["own"]:
+            attempts.append(("appended .shift() to the positioning chain", [self._append_chain(last["frames"], f".shift({vec_expr(dx, dy)})")]))
+        attempts.append(("appended .shift() where the object is created",
+                         [self._append_chain(obj["frames"], f".shift({vec_expr(dx, dy)})")]))
+        return attempts
+
+    def _rewrite_vector(self, ev: dict, dx: float, dy: float):
+        if len(ev["args"]) < 1 or not isinstance(ev["args"][0], list) or len(ev["args"][0]) != 3:
+            return None
+        if ev["method"] == "shift" and len(ev["args"]) != 1:
+            return None
+        if ev["method"] == "move_to" and len(ev["args"]) > 1:
+            pass
+        t = locate(self.p, ev["frames"], 0, "point_or_mobject" if ev["method"] == "move_to" else None, 0,
+                   resolve_globals=False)
+        if t.kind == "missing" or t.kind == "computed":
+            if t.kind == "missing" and t.frame_index == len(ev["frames"]) - 1 and t.param:
+                x, y, z = ev["args"][0]
+                return [insert_kwarg(t.src, t.call, t.param, f"({fmt(x + dx)}, {fmt(y + dy)}, {fmt(z)})")]
+            return None
+        if t.frame_index != len(ev["frames"]) - 1:
+            return None
+        if t.via is not None:
+            return None  # a named constant (e.g. center=CENTER); don't rewrite shared constants
+        x, y, z = ev["args"][0]
+        nx, ny = x + dx, y + dy
+        if isinstance(t.node, (ast.Tuple, ast.List)):
+            lit = f"({fmt(nx)}, {fmt(ny)}, {fmt(z)})"
+        else:
+            if abs(z) > 1e-9:
+                return None
+            lit = vec_expr(nx, ny)
+        a, b = t.src.span(t.node)
+        return [Edit(t.src.rel, a, b, lit)]
+
+    def plan_drawing(self, obj: dict, text: str, each: bool = True) -> list[tuple[str, list[Edit]]]:
+        """A drawing (what one line of code makes in bulk) moves or scales as a whole: `text` (`.shift(...)`,
+        `.scale(...)`) goes at the end of the `name = ...` statement holding it, so layout calls on the whole
+        (`VGroup(*[...]).arrange(...).move_to(...)`) come first; `each`: else on every piece where it is made."""
+        attempts = []
+        src, _, top, stmt = self._creation(obj)
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.value, ast.Call) \
+                and stmt.value is not top and not src.in_loop(stmt):
+            _, end = src.span(stmt.value)
+            attempts.append(("appended it to the statement that makes the drawing", [Edit(src.rel, end, end, text)]))
+        if each:
+            attempts.append(("appended it where each piece is made", [self._append_chain(obj["frames"], text)]))
+        return attempts
+
+    def _append_chain(self, frames: list, text: str) -> Edit:
+        fr = frames[-1]
+        src = self.p.src(fr["file"])
+        call = src.find_call(fr["pos"])
+        if call is None:
+            raise EditError("call site not found")
+        top = src.chain_top(call)
+        _, end = src.span(top)
+        return Edit(src.rel, end, end, text)
+
+    def _shift_statement(self, obj: dict, ev: dict, dx: float, dy: float):
+        """Insert `var.shift(...)` after the statement holding a group layout call."""
+        cf = obj["frames"][-1]
+        csrc = self.p.src(cf["file"])
+        ccall = csrc.find_call(cf["pos"])
+        if ccall is None:
+            return None
+        top = csrc.chain_top(ccall)
+        stmt = csrc.parent.get(top)
+        if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)
+                and stmt.value is top):
+            return None
+        var = stmt.targets[0].id
+        if len(obj["frames"]) != 1 and not (len(obj["frames"]) == 2 and obj["frames"][0]["func"] == "Tx"):
+            pass
+        ef = ev["frames"][-1]
+        if ef["file"] != cf["file"]:
+            return None
+        ecall = csrc.find_call(ef["pos"])
+        if ecall is None:
+            return None
+        estmt = ecall
+        while not isinstance(csrc.parent.get(estmt), (ast.FunctionDef, ast.For, ast.While, ast.If, ast.With)):
+            estmt = csrc.parent.get(estmt)
+            if estmt is None:
+                return None
+        if csrc.enclosing(estmt, (ast.FunctionDef,)) is not csrc.enclosing(stmt, (ast.FunctionDef,)):
+            return None
+        if not isinstance(estmt, (ast.Expr, ast.Assign, ast.AugAssign)):
+            return None
+        if estmt.end_lineno + 0 < stmt.end_lineno:
+            return None
+        indent = " " * estmt.col_offset
+        line_end = csrc.off(estmt.end_lineno, estmt.end_col_offset)
+        return [Edit(csrc.rel, line_end, line_end, f"\n{indent}{var}.shift({vec_expr(dx, dy)})")]
+
+    # ----------------------------------------------------- one build only
+    BUILD_MARK = "# manimble build"
+    BUILD_END_MARK = "# manimble build end"
+
+    def plan_build_move(self, scene: dict, obj: dict, stops: list, stop: int, dx: float, dy: float
+                        ) -> list[tuple[str, list[Edit]]]:
+        """Move an object in one build of its slide only: `var.shift((dx, dy, 0))  # manimble build` where the build
+        starts (after the previous build's next_slide(), or after the object is made when it first shows in this
+        build) and the opposite `# manimble build end` shift right after the next_slide() that ends it, so the other
+        builds keep their positions. Moving it again in the same build adjusts the same lines."""
+        src, var, pre, made, before, after = self._build_context(scene, obj, stops, stop)
+        end = [self._bump(src, after, var, self.BUILD_END_MARK, -dx, -dy)] if after is not None else []
+        attempts = []
+        start = before if before is not None and before.lineno > made.end_lineno else made
+        attempts.append((f"shifted it in build {stop + 1} only",
+                         pre + [self._bump(src, start, var, self.BUILD_MARK, dx, dy)] + end))
+        if after is not None and not pre:        # later code in the build places it: shift it just before the pause
+            attempts.append((f"shifted it at the end of build {stop + 1} only",
+                             [self._bump(src, after, var, self.BUILD_MARK, dx, dy, ahead=True)] + end))
+        return attempts
+
+    def plan_spread_build_move(self, scene: dict, obj: dict, stops: list, stop: int) -> list[tuple[str, list[Edit]]]:
+        """Turn the one-build move of `plan_build_move` at `stop` into a move in every build: its pair of shift lines
+        goes and the object's own position in the source moves by the same amount."""
+        src, var, pre, made, before, after = self._build_context(scene, obj, stops, stop)
+        if pre:
+            raise EditError("this element was not moved in this build alone")
+        start = before if before is not None and before.lineno > made.end_lineno else made
+        found = self._marked(src, start, var, self.BUILD_MARK)
+        if found is None and after is not None:
+            found = self._marked(src, after, var, self.BUILD_MARK, ahead=True)
+        if found is None:
+            raise EditError("this element was not moved in this build alone")
+        x, y = _shift_of(found)
+        edits = [Edit(src.rel, *_stmt_lines(src, found), "")]
+        if after is not None:
+            edits.append(self._bump(src, after, var, self.BUILD_END_MARK, x, y))
+        marks = {s.lineno for s in ast.walk(src.tree) if isinstance(s, ast.Expr) and self._is_mark(src, s)}
+        own = dict(obj, events=[e for e in obj["events"]
+                                if not (e["frames"][-1]["file"] == src.rel and e["frames"][-1]["pos"][0] in marks)])
+        return [(f"moved it in every build ({how})", edits + plan)
+                for how, plan in self.plan_move(own, x, y) if plan]
+
+    def _build_context(self, scene: dict, obj: dict, stops: list, stop: int):
+        """(src, var, edits naming the object, its creation statement, the next_slide() statements that start and
+        end the build) for a move in one build, or EditError when the slide's code is not laid out for one."""
+        if len(stops) < 2:
+            raise EditError("this slide has only one build")
+        src, _, top, stmt = self._creation(obj)
+        if src.rel != scene["file"]:
+            raise EditError("this element is made outside the slide's code")
+        cls = next((n for n in src.tree.body if isinstance(n, ast.ClassDef) and n.name == scene["name"]), None)
+        fn = next((n for n in (cls.body if cls else []) if isinstance(n, ast.FunctionDef) and n.name == "construct"), None)
+        loops = (ast.For, ast.AsyncFor, ast.While)
+        if fn is None or src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) is not fn \
+                or src.enclosing(stmt, loops) is not None:
+            raise EditError("this element is not made directly in construct()")
+        var, pre = self._ensure_var(obj, src, top, stmt)
+
+        def pause(i):
+            if i < 0 or i >= len(stops) - 1:
+                return None
+            site = stops[i].get("site")
+            call = src.find_call(site["pos"]) if site and site.get("file") == src.rel else None
+            s = src.parent.get(call) if call is not None else None
+            if not isinstance(s, ast.Expr) or src.enclosing(s, loops) is not None \
+                    or src.enclosing(s, (ast.FunctionDef, ast.AsyncFunctionDef)) is not fn:
+                raise EditError("this build's next_slide() is not a plain call in construct()")
+            return s
+        before, after = pause(stop - 1), pause(stop)
+        if after is not None and after.lineno < stmt.end_lineno:
+            raise EditError("this element is made after this build")
+        return src, var, pre, stmt, before, after
+
+    def _is_mark(self, src: Src, s) -> bool:
+        a, b = _stmt_lines(src, s)
+        return self.BUILD_MARK in src.data[a:b].decode("utf-8")
+
+    def _marked(self, src: Src, anchor, var: str, mark: str, ahead: bool = False):
+        """The `var.shift(...)  <mark>` statement among the marked lines right after `anchor` (right before it when
+        `ahead`), if any."""
+        body = _body_of(src, anchor)
+        i = body.index(anchor)
+        run = body[i + 1:] if not ahead else body[:i][::-1]
+        for s in run:
+            if not (isinstance(s, ast.Expr) and self._is_mark(src, s)):
+                break
+            a, b = _stmt_lines(src, s)
+            if src.data[a:b].decode("utf-8").rstrip().endswith(mark) and _shift_of(s) is not None \
+                    and ast.unparse(s.value.func) == f"{var}.shift":
+                return s
+        return None
+
+    def _bump(self, src: Src, anchor, var: str, mark: str, dx: float, dy: float, ahead: bool = False) -> Edit:
+        """Add (dx, dy) to the marked shift next to `anchor`: a new line, the old one adjusted, or the line removed
+        when the shifts cancel."""
+        s = self._marked(src, anchor, var, mark, ahead)
+        if s is not None:
+            x, y = _shift_of(s)
+            dx, dy = x + dx, y + dy
+        line = f"{var}.shift(({fmt(dx)}, {fmt(dy)}, 0))  {mark}"
+        if s is not None:
+            a, b = _stmt_lines(src, s)
+            keep = abs(dx) > 5e-4 or abs(dy) > 5e-4
+            return Edit(src.rel, a, b, " " * s.col_offset + line + "\n" if keep else "")
+        if ahead:
+            at = src.line_starts[anchor.lineno - 1]
+            return Edit(src.rel, at, at, " " * anchor.col_offset + line + "\n")
+        return _after_stmt(src, anchor, line)
+
+    # --------------------------------------------------------- resizing
+    def plan_resize(self, obj: dict, ratio: float) -> list[tuple[str, list[Edit]]]:
+        attempts = []
+        size_events = [e for e in obj["events"] if e["own"] and e["method"] in
+                       ("set", "set_width", "set_height", "scale_to_fit_width", "scale_to_fit_height", "scale")]
+        if size_events:
+            try:
+                ed = self._rewrite_size(size_events[-1], ratio)
+                if ed:
+                    attempts.append((f"scaled the {size_events[-1]['method']}() argument", ed))
+            except EditError:
+                pass
+        if obj["kind"] in ("text", "tex") and obj.get("font0"):
+            try:
+                ed = self.plan_font(obj, obj["font0"] * ratio)
+                attempts.append(("changed the font size", ed))
+            except EditError:
+                pass
+        attempts.append(("appended .scale() where the object is created",
+                         [self._append_chain(obj["frames"], f".scale({fmt(ratio, 4)})")]))
+        return attempts
+
+    def _rewrite_size(self, ev: dict, ratio: float):
+        m = ev["method"]
+        edits = []
+        if m == "scale":
+            if not ev["args"] or not isinstance(ev["args"][0], (int, float)):
+                return None
+            t = locate(self.p, ev["frames"], 0, "scale_factor", 0, resolve_globals=False)
+            val = ev["args"][0] * ratio
+        elif m == "set":
+            kws = [k for k in ("width", "height") if isinstance(ev["kwargs"].get(k), (int, float))]
+            if not kws:
+                return None
+            for k in kws:
+                t = locate(self.p, ev["frames"], 0, k, None, resolve_globals=False)
+                e = self._size_edit(t, ev, ev["kwargs"][k] * ratio)
+                if e is None:
+                    return None
+                edits.append(e)
+            return edits
+        else:
+            if not ev["args"] or not isinstance(ev["args"][0], (int, float)):
+                return None
+            t = locate(self.p, ev["frames"], 0, None, 0, resolve_globals=False)
+            val = ev["args"][0] * ratio
+        e = self._size_edit(t, ev, val)
+        return [e] if e else None
+
+    def _size_edit(self, t: Target, ev: dict, val: float):
+        if t.kind == "node":
+            if t.frame_index != len(ev["frames"]) - 1 or t.via is not None:
+                return None
+            a, b = t.src.span(t.node)
+            return Edit(t.src.rel, a, b, fmt(val, 4))
+        if t.kind == "missing" and t.frame_index == len(ev["frames"]) - 1 and t.param:
+            return insert_kwarg(t.src, t.call, t.param, fmt(val, 4))
+        return None
+
+
+    # ------------------------------------------------------- insert / delete
+    def plan_insert(self, scene: dict, stop: int, nstops: int, code: str, site: dict | None = None,
+                    tag: str = "", anim: dict | None = None, prev: dict | None = None) -> tuple[Edit, int]:
+        """Insert `self.add(code)  # manimble` so the element exists at the given build.
+
+        Only play() and wait() draw frames, so the element goes before the construct() statement that made the
+        build's last one (`anim`, recorded while the scene ran): added after it, the element would be in the
+        editor's picture of the build but not in the clip the show plays. Failing that it goes before `site`, the
+        next_slide() call that ends that build, or (the last build) at the end of construct(). `prev` is the
+        next_slide() that ended the build before. `tag` extends the marker (`# manimble pen`) for elements the worker
+        recognises by it."""
+        src = self.p.src(scene["file"])
+        cls = next((n for n in src.tree.body if isinstance(n, ast.ClassDef) and n.name == scene["name"]), None)
+        fn = next((n for n in (cls.body if cls else []) if isinstance(n, ast.FunctionDef) and n.name == "construct"), None)
+        if fn is None:
+            raise EditError("scene has no construct()")
+        line = f"self.add({code})  # manimble" + (f" {tag}" if tag else "")
+
+        def top(at):
+            """The statement of construct()'s own body that holds the call recorded at `at`."""
+            if not at or at.get("file") != scene["file"]:
+                return None
+            node = src.find_call(at["pos"])
+            while node is not None and src.parent.get(node) is not fn:
+                node = src.parent.get(node)
+            return node
+        last, end, before = top(anim), top(site), top(prev)
+        # not when the build's last animation shares a statement (a loop, say) with the next_slide() either side
+        if last is not None and (end is None) == (site is None) and (end is None or last.lineno < end.lineno) \
+                and (before is None or last.lineno > before.end_lineno):
+            at = src.line_starts[last.lineno - 1]
+            return Edit(src.rel, at, at, " " * last.col_offset + line + "\n"), last.lineno
+        if site and site.get("file") == scene["file"]:
+            call = src.find_call(site["pos"])
+            stmt = call
+            while stmt is not None and not isinstance(src.parent.get(stmt), (ast.FunctionDef, ast.For, ast.While, ast.If, ast.With)):
+                stmt = src.parent.get(stmt)
+            if stmt is not None and isinstance(stmt, ast.Expr):
+                at = src.line_starts[stmt.lineno - 1]
+                return Edit(src.rel, at, at, " " * stmt.col_offset + line + "\n"), stmt.lineno
+        last = fn.body[-1]
+        indent = " " * last.col_offset
+        at = src.line_starts[last.end_lineno] - 1 if last.end_lineno < len(src.line_starts) else len(src.data)
+        return Edit(src.rel, at, at, "\n" + indent + line), last.end_lineno + 1
+
+    def plan_delete_stop(self, scene: dict, site: dict | None) -> list[Edit]:
+        """Remove the `self.next_slide()` at `site` (recorded while the scene ran), so the build it ends runs on
+        into the next one. Only a plain call written in the scene's own code qualifies: one reached through a
+        helper, a loop that pauses several times, or a call with options other than notes= (loop=..., auto_next=...)
+        is left alone. Speaker notes on the call go with it."""
+        if not site or site.get("file") != scene["file"]:
+            raise EditError("this build's pause is not in the slide's own code; remove it in the source instead")
+        src = self.p.src(scene["file"])
+        call = src.find_call(site["pos"])
+        stmt = src.parent.get(call) if call is not None else None
+        if not isinstance(stmt, ast.Expr) or ast.unparse(call.func) != "self.next_slide":
+            raise EditError("this build is ended by a helper, not by self.next_slide(); remove it in the source instead")
+        if call.args or any(k.arg != "notes" for k in call.keywords):
+            raise EditError("this build's next_slide() has options (" + ast.unparse(call)[len("self.next_slide("):-1]
+                            + "); remove it in the source instead")
+        if src.enclosing(stmt, (ast.For, ast.AsyncFor, ast.While)) is not None:
+            raise EditError("this build's next_slide() is inside a loop; remove it in the source instead")
+        return self._keep_block(src, _body_of(src, stmt), [self._cut_stmt(src, stmt)])
+
+    # animations that take the mobjects to show as their positional arguments, and the scene / group calls that do
+    DISPLAY_CALLS = {
+        "add", "remove", "play", "bring_to_front", "bring_to_back", "add_foreground_mobject", "add_foreground_mobjects",
+        "remove_foreground_mobject", "remove_foreground_mobjects", "Group", "VGroup", "AnimationGroup", "LaggedStart",
+        "Succession", "FadeIn", "FadeOut", "Write", "Unwrite", "Create", "Uncreate", "DrawBorderThenFill", "GrowArrow",
+        "GrowFromCenter", "GrowFromEdge", "GrowFromPoint", "SpinInFromNothing", "ShrinkToCenter", "Indicate",
+        "Circumscribe", "Wiggle", "Flash", "ShowPassingFlash", "ApplyWave", "AddTextLetterByLetter",
+        "RemoveTextLetterByLetter", "ShowIncreasingSubsets", "ShowSubmobjectsOneByOne",
+    }
+
+    def plan_delete(self, obj: dict, nth: tuple[int, int] | None = None) -> list[Edit]:
+        """Remove an element from the slide.
+
+        An element that is a bare expression (`self.add(Circle())`, `self.play(FadeIn(Text("x")))`,
+        `Group(Circle(), ...)`) is cut out of the call that shows it. A named element (`t = Text(...)`) loses its
+        assignment, its own statements (`t.shift(...)`) and every place it is shown (`self.add(t)`, `FadeIn(t)`,
+        `VGroup(a, t)`), as long as nothing else depends on it. When other code uses it (`SurroundingRectangle(t)`,
+        `t.get_right()`, `Transform(t, ...)`) the name and its statements stay, so that code keeps working, and only
+        the places that show it are removed; the re-render then checks that it is really gone.
+
+        One of the elements a comprehension makes (`VGroup(*[SurroundingRectangle(c) for c in cells])`) is removed by
+        writing the comprehension out item by item without it; `nth` is (its place, how many there are) among the
+        objects made at that call."""
+        src, call, top, stmt = self._creation(obj)
+        comp = src.parent.get(top)
+        if isinstance(comp, (ast.ListComp, ast.GeneratorExp)) and comp.elt is top and nth is not None:
+            edit = self._unroll_without(src, comp, *nth)
+            if edit is not None:
+                return [edit]
+        body = _body_of(src, stmt)
+        var = _assigned_name(stmt, top)
+        if var is None:
+            if isinstance(stmt, ast.Expr) and (stmt.value is top or _chain_root(stmt.value) is top):
+                edits = [self._cut_stmt(src, stmt)]
+            else:
+                edits = self._cut_node(src, top)
+                if edits is None:
+                    if src.in_loop(top):
+                        raise EditError("this element is made in a loop together with others like it; "
+                                        "remove it in the source instead")
+                    raise EditError("this element is part of a larger expression; remove it in the source instead")
+            return self._keep_block(src, body, edits)
+
+        fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        scope = fdef if fdef is not None else src.tree
+        uses = [n for n in ast.walk(scope) if isinstance(n, ast.Name) and n.id == var and n is not stmt.targets[0]]
+        own, shown, other = [], [], []
+        for n in uses:
+            s = src.enclosing(n, ast.stmt)
+            if isinstance(n.ctx, ast.Store) or s is None or s is stmt or src.enclosing(n, (ast.Lambda, ast.FunctionDef,
+                                                                                         ast.AsyncFunctionDef)) is not fdef:
+                other.append(n)
+            elif isinstance(s, ast.Expr) and isinstance(_chain_root(s.value), ast.Name) and _chain_root(s.value).id == var:
+                own.append(s)                        # `var.shift(...)`, `var.add(Underline(var))`
+            elif self._cut_node(src, n) is not None:
+                shown.append(n)
+            else:
+                other.append(n)
+        edits = []
+        if not other:
+            edits.append(self._cut_stmt(src, stmt))
+            for s in own:
+                edits.append(self._cut_stmt(src, s))
+        gone = {id(stmt)} | {id(s) for s in own} if not other else set()
+        for n in shown:
+            if any(id(p) in gone for p in _ancestors(src, n)):
+                continue                             # inside a statement that goes anyway
+            cut = self._cut_node(src, n)
+            if cut:
+                edits += cut
+                gone.update(id(p) for p in _ancestors(src, n) if isinstance(p, ast.stmt)
+                            and any(e.start <= src.span(p)[0] and e.end >= src.span(p)[1] for e in cut))
+        if not edits:
+            raise EditError("could not find where this element is shown; remove it in the source instead")
+        return self._keep_block(src, body, _disjoint(edits))
+
+    @staticmethod
+    def _unroll_without(src: Src, comp, skip: int, count: int) -> Edit | None:
+        """The comprehension written out as its items, item `skip` left out. Only a plain one qualifies: a single
+        `for name in <iterable>` with no condition, over a name or attribute (indexed as `cells[0]`), a list or
+        tuple literal, or range() of constants, that makes `count` items."""
+        if len(comp.generators) != 1:
+            return None
+        gen = comp.generators[0]
+        if gen.ifs or gen.is_async or not isinstance(gen.target, ast.Name):
+            return None
+        it, var = gen.iter, gen.target.id
+        if isinstance(it, (ast.Name, ast.Attribute)):
+            base = src.text(it)
+            values = [f"{base}[{i}]" for i in range(count)]
+        elif isinstance(it, (ast.List, ast.Tuple)) and not any(isinstance(e, ast.Starred) for e in it.elts):
+            values = [src.text(e) if isinstance(e, (ast.Name, ast.Attribute, ast.Constant, ast.Subscript, ast.Call))
+                      else f"({src.text(e)})" for e in it.elts]
+        elif (isinstance(it, ast.Call) and _func_name(it) == "range" and not it.keywords
+              and all(isinstance(a, ast.Constant) and isinstance(a.value, int) for a in it.args)):
+            values = [str(v) for v in range(*(a.value for a in it.args))]
+        else:
+            return None
+        if len(values) != count or not 0 <= skip < count:
+            return None
+        uses = [n for n in ast.walk(comp.elt) if isinstance(n, ast.Name) and n.id == var]
+        if any(not isinstance(n.ctx, ast.Load) for n in uses) or any(
+                isinstance(n, (ast.Lambda, ast.ListComp, ast.GeneratorExp, ast.SetComp, ast.DictComp))
+                for n in ast.walk(comp.elt)):
+            return None                              # the name is rebound inside the item: not a plain substitution
+        a0, _ = src.span(comp.elt)
+        text = src.text(comp.elt).encode("utf-8")
+        items = []
+        for i, value in enumerate(values):
+            if i == skip:
+                continue
+            out = text
+            for n in sorted(uses, key=lambda n: src.span(n)[0], reverse=True):
+                na, nb = src.span(n)
+                out = out[:na - a0] + value.encode("utf-8") + out[nb - a0:]
+            items.append(out.decode("utf-8"))
+        ca, cb = src.span(comp)
+        call = src.parent.get(comp)
+        # `VGroup(f(x) for x in xs)`: the generator's span takes in the call's own parentheses
+        own = isinstance(comp, ast.GeneratorExp) and isinstance(call, ast.Call) and src.span(call.func)[1] == ca
+        bare = isinstance(comp, ast.GeneratorExp) and isinstance(call, ast.Call) and not own
+        if comp.elt.lineno == comp.lineno:
+            body = ", ".join(items)
+        else:                                        # one item per line, as the comprehension was laid out
+            line = src.data[src.line_starts[comp.end_lineno - 1]:].split(b"\n", 1)[0].decode("utf-8")
+            close = line[:len(line) - len(line.lstrip())]
+            pad = " " * comp.elt.col_offset
+            body = "\n" + "".join(f"{pad}{t},\n" for t in items) + close
+        if own:
+            return Edit(src.rel, ca, cb, "(*[" + body + "])")
+        if bare:
+            return Edit(src.rel, ca, cb, "*[" + body + "]")
+        return Edit(src.rel, ca, cb, "[" + body + "]")
+
+    def _cut_stmt(self, src: Src, stmt) -> Edit:
+        a, b = _stmt_lines(src, stmt)
+        return Edit(src.rel, a, b, "")
+
+    def _keep_block(self, src: Src, body: list, edits: list[Edit]) -> list[Edit]:
+        """An emptied construct() (or loop body) would not parse, so `pass` keeps the block."""
+        spans = [(src.span(s)[0], _stmt_lines(src, s)[1]) for s in body]
+        left = [s for s, (a, b) in zip(body, spans) if not any(e.start <= a and e.end >= b and not e.text for e in edits)]
+        if body and not left:
+            first = min(edits, key=lambda e: e.start)
+            edits[edits.index(first)] = Edit(first.rel, first.start, first.end, " " * body[0].col_offset + "pass\n")
+        return edits
+
+    def _cut_node(self, src: Src, node) -> list[Edit] | None:
+        """Edits that drop `node` from the call or literal that shows it, cascading outwards when the container
+        becomes empty (`self.play(FadeIn(x))` goes as a whole). None when the node is not in such a place."""
+        p = src.parent.get(node)
+        if isinstance(p, ast.Expr):
+            return [self._cut_stmt(src, p)]
+        if isinstance(p, ast.Starred):
+            return None
+        if isinstance(p, (ast.List, ast.Tuple)) and isinstance(getattr(p, "ctx", None), ast.Load) and node in p.elts:
+            pp = src.parent.get(p)
+            shown = isinstance(pp, ast.Starred) and isinstance(src.parent.get(pp), ast.Call) \
+                and _func_name(src.parent.get(pp)) in self.DISPLAY_CALLS
+            kept = isinstance(pp, ast.Assign) and len(pp.targets) == 1 and isinstance(pp.targets[0], ast.Name)
+            if not (shown or kept):
+                return None                          # a table's labels, a list of points, ...
+            return [self._drop_item(src, p.elts, [], node)]
+        if isinstance(p, ast.Call) and node in p.args and _func_name(p) in self.DISPLAY_CALLS:
+            if len(p.args) == 1 and _func_name(p) not in ("Group", "VGroup"):
+                up = self._cut_node(src, p)
+                if up is not None:
+                    return up
+            return [self._drop_item(src, p.args, p.keywords, node)]
+        return None
+
+    @staticmethod
+    def _drop_item(src: Src, items: list, keywords: list, node) -> Edit:
+        """Remove one positional item from a call or literal, taking a separating comma with it."""
+        order = sorted(list(items) + [k.value for k in keywords], key=lambda n: src.span(n)[0])
+        i = order.index(node)
+        a, b = src.span(node)
+        if i > 0:
+            return Edit(src.rel, src.span(order[i - 1])[1], b, "")
+        if i + 1 < len(order):
+            nxt = order[i + 1]
+            kw = next((k for k in keywords if k.value is nxt), None)
+            start = src.off(kw.lineno, kw.col_offset) if kw is not None and getattr(kw, "lineno", None) else src.span(nxt)[0]
+            return Edit(src.rel, a, start, "")
+        # The only item: a trailing comma goes with it (`Group(\n    x,\n)` must not become `Group(\n    ,\n)`),
+        # and so does the whole line when nothing else is on it.
+        data, e = src.data, b
+        while e < len(data) and data[e:e + 1] in (b" ", b"\t"):
+            e += 1
+        if data[e:e + 1] == b",":
+            e += 1
+            while e < len(data) and data[e:e + 1] in (b" ", b"\t"):
+                e += 1
+        s = a
+        while s > 0 and data[s - 1:s] in (b" ", b"\t"):
+            s -= 1
+        if (s == 0 or data[s - 1:s] == b"\n") and data[e:e + 1] == b"\n":
+            return Edit(src.rel, s, e + 1, "")
+        return Edit(src.rel, a, e, "")
+
+    def plan_image_file(self, obj: dict, file: str, deck_dir: str) -> list[Edit]:
+        """Point a picture at another file (Extract Elements' filled-in background). `file` is in the deck folder.
+        A direct ImageMobject(...) gets that file in place of its first argument; a helper call that is given the
+        picture's file name (paper_figure("x.png") ...) gets the new name, with the file copied next to the old one."""
+        src, call, _, _ = self._creation(obj)
+        if _func_name(call) == "ImageMobject" and call.args and not isinstance(call.args[0], ast.Starred):
+            a, b = src.span(call.args[0])
+            return [Edit(src.rel, a, b, f'str(__import__("pathlib").Path(__file__).resolve().parent / {py_str(file)})')]
+        old = os.path.basename(str(obj.get("value") or ""))
+        hits = [n for n in ast.walk(call) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and old and (n.value == old or n.value.endswith("/" + old))]
+        if len(hits) != 1:
+            raise EditError("the picture's file is chosen by code, so it cannot be swapped for the filled-in copy")
+        n = hits[0]
+        here = os.path.dirname(str(obj.get("path") or obj.get("value") or ""))
+        if not here or not os.path.isdir(here):
+            raise EditError("could not find the folder of the picture")
+        name = os.path.basename(file)
+        if os.path.realpath(os.path.join(here, name)) != os.path.realpath(os.path.join(deck_dir, file)):
+            shutil.copyfile(os.path.join(deck_dir, file), os.path.join(here, name))
+        a, b = src.span(n)
+        return [Edit(src.rel, a, b, py_str(n.value[: len(n.value) - len(old)] + name))]
+
+    # ------------------------------------------------------- formatting
+    def _creation(self, obj: dict):
+        """(src, call, top, stmt): the outermost deck call that made the object, the end of its method chain
+        and the statement holding it."""
+        fr = obj["frames"][-1]
+        src = self.p.src(fr["file"])
+        call = src.find_call(fr["pos"])
+        if call is None:
+            raise EditError("call site not found")
+        top = src.chain_top(call)
+        stmt = top
+        while stmt is not None and not isinstance(stmt, ast.stmt):
+            stmt = src.parent.get(stmt)
+        if stmt is None:
+            raise EditError("statement not found")
+        return src, call, top, stmt
+
+    # where a chain puts its object: left off a copy, which is placed by a move_to() of its own
+    PLACING = ("move_to", "shift", "next_to", "to_edge", "to_corner", "align_to", "set_x", "set_y", "set_z", "center")
+
+    def portable_code(self, obj: dict) -> tuple[str | None, str]:
+        """Code that makes the object again on another slide of the deck (Copy): the expression that made it, without
+        the calls at the end of its chain that placed it. None, with the reason, when that code reads names of its
+        own slide's code (a loop's variable, an object made earlier) or was not written in the slide."""
+        try:
+            src, call, top, stmt = self._creation(obj)
+        except EditError as e:
+            return None, str(e)
+        expr = top
+        while expr is not call and isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) \
+                and expr.func.attr in self.PLACING:
+            expr = expr.func.value
+        fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if fdef is None:
+            return None, "it is not made in a slide's code"
+        # names the slide's code binds (its variables, loop variables, arguments) are not there on another slide
+        local = {a.arg for a in fdef.args.args + fdef.args.kwonlyargs} - {"self"}
+        for n in ast.walk(fdef):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                local.add(n.id)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n is not fdef:
+                local.add(n.name)
+        bound = {n.id for c in ast.walk(expr) if isinstance(c, (ast.comprehension,))
+                 for n in ast.walk(c.target) if isinstance(n, ast.Name)}
+        bound |= {a.arg for lam in ast.walk(expr) if isinstance(lam, ast.Lambda) for a in lam.args.args}
+        used = sorted({n.id for n in ast.walk(expr) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} - bound)
+        stuck = [n for n in used if n in local]
+        if stuck:
+            return None, f"its code reads {', '.join(stuck[:3])} from its slide"
+        return src.text(expr), ""
+
+    def names_of(self, obj: dict) -> set[str]:
+        """The variables the statement creating the object assigns (`img = ImageMobject(...)` -> {"img"})."""
+        try:
+            _, _, _, stmt = self._creation(obj)
+        except EditError:
+            return set()
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+            targets = [stmt.target]
+        else:
+            return set()
+        return {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+
+    def reads(self, obj: dict, names: set) -> bool:
+        """Whether the statement creating the object, or one holding its own positioning call, reads one of
+        `names` (`Arrow(img.get_right(), ...)`, `line.put_start_and_end_on(img.get_bottom(), ...)`)."""
+        stmts = []
+        try:
+            src, _, _, stmt = self._creation(obj)
+            stmts.append(stmt)
+        except EditError:
+            return False
+        for e in obj.get("events", []):
+            if not e.get("own") or e["method"] not in ("put_start_and_end_on", "next_to", "move_to", "shift",
+                                                        "align_to", "set_x", "set_y"):
+                continue
+            fr = e["frames"][-1]
+            if fr["file"] != src.rel:
+                continue
+            node = src.find_call(fr["pos"])
+            while node is not None and not isinstance(node, ast.stmt):
+                node = src.parent.get(node)
+            if node is not None and node is not stmt:
+                stmts.append(node)
+        return any(isinstance(n, ast.Name) and n.id in names for s in stmts for n in ast.walk(s))
+
+    def _ensure_var(self, obj: dict, src: Src, top, stmt, taken: set | None = None) -> tuple[str, list[Edit]]:
+        """A variable holding the object. A Manimble insert (`self.add(X)  # manimble`) is split into
+        `name = X  # manimble` + `self.add(name)  # manimble`; other code must name the object itself.
+        `taken`: names other edits of the same plan already give out."""
+        var = _assigned_name(stmt, top)
+        if var:
+            return var, []
+        a, b = _stmt_lines(src, stmt)
+        text = src.data[a:b].decode("utf-8")
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and ast.unparse(stmt.value.func) == "self.add"
+                and len(stmt.value.args) == 1 and stmt.value.args[0] is top and "# manimble" in text and text.count("\n") <= 1):
+            fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            used = {n.id for n in ast.walk(fdef) if isinstance(n, ast.Name)} if fdef is not None else set()
+            used |= taken or set()
+            base = {"text": "text", "tex": "formula", "image": "image", "line": "line", "table": "table"}.get(obj["kind"], "shape")
+            i = 1
+            while f"{base}{i}" in used:
+                i += 1
+            name = f"{base}{i}"
+            indent = " " * stmt.col_offset
+            sa, sb = src.span(stmt)
+            # the line's comment (`# manimble`, or a text frame's `# manimble box ...`) stays with the creation
+            eol = src.data.find(b"\n", sb)
+            eol = len(src.data) if eol < 0 else eol
+            comment = src.data[sb:eol].decode("utf-8").rstrip()
+            return name, [Edit(src.rel, sa, eol, f"{name} = {src.text(top)}{comment}\n{indent}self.add({name})  # manimble")]
+        raise EditError("give this element a name in the source first (for example `t = Text(...)`), "
+                        "then it can be underlined or struck through")
+
+    def _decoration_stmt(self, src: Src, stmt, var: str, kind: str):
+        """The `var.add(...)  # manimble <kind>` statement that follows the creation of var, if any (for a highlight
+        of part of the text, `var.add_to_back(...)`)."""
+        body = _body_of(src, stmt)
+        marker = f"# manimble {kind}"
+        for s in body[body.index(stmt) + 1:]:
+            a, b = _stmt_lines(src, s)
+            text = src.data[a:b].decode("utf-8")
+            if marker in text and isinstance(s, ast.Expr) and isinstance(s.value, ast.Call) \
+                    and ast.unparse(s.value.func) in (f"{var}.add", f"{var}.add_to_back"):
+                return s
+        return None
+
+    @staticmethod
+    def _decoration_chars(s) -> list | None:
+        """The character ranges a `*_chars(var, [...])` decoration statement covers (None: the whole text)."""
+        inner = s.value.args[0] if s.value.args else None
+        if not (isinstance(inner, ast.Call) and _func_name(inner) in CHAR_HELPERS.values() and len(inner.args) > 1):
+            return None
+        try:
+            return [list(r) for r in ast.literal_eval(inner.args[1])]
+        except ValueError:
+            return None
+
+    def char_decorations(self, obj: dict) -> dict:
+        """Underline / strike / highlight of a text as character ranges of its value: {kind: [[start, end(, colour)],
+        ...]}; a kind on the whole text covers all of it; kinds it does not have are left out."""
+        out = {}
+        try:
+            src, call, top, stmt = self._creation(obj)
+        except EditError:
+            return out
+        var = _assigned_name(stmt, top)
+        n = len(obj.get("value") or "")
+        for kind in ("underline", "strike", "highlight"):
+            s = self._decoration_stmt(src, stmt, var, kind) if var else None
+            if s is not None:
+                chars = self._decoration_chars(s)
+                out[kind] = chars if chars is not None else [[0, n]]
+        if "highlight" not in out:
+            hl = self._chain_call(src, call, "add_background_rectangle")
+            col = next((k.value for k in hl.keywords if k.arg == "color"), None) if hl is not None else None
+            if hl is not None:
+                out["highlight"] = [[0, n, col.value if isinstance(col, ast.Constant) and isinstance(col.value, str) else "#FFD400"]]
+        return out
+
+    def _plan_char_decorations(self, obj: dict, old: str, new: str, styles: dict, edits: list) -> list[Edit]:
+        """`edits` (the text's own) plus underline / strike / highlight statements for the characters `styles`
+        gives them; one already on part of the text follows its characters when the text is retyped. Naming the text
+        for them (`text1 = Text(...)`) rewrites its creation, so the edits inside it are folded into that one."""
+        kinds = [k for k in ("underline", "strike", "highlight") if k in styles]
+        try:
+            src, call, top, stmt = self._creation(obj)
+        except EditError:
+            if kinds:
+                raise
+            return edits
+        var = _assigned_name(stmt, top)
+        out: list[Edit] = []
+        naming, helpers = None, []
+        for kind in ("underline", "strike", "highlight"):
+            existing = self._decoration_stmt(src, stmt, var, kind) if var else None
+            if kind in styles:
+                runs = [list(r) for r in styles[kind] if int(r[1]) > int(r[0])]
+            elif existing is not None and new != old and self._decoration_chars(existing) is not None:
+                # follows its characters through the retyping: only its ranges change
+                cur = self._decoration_chars(existing)
+                runs = [m + list(r[2:]) for r in cur for m in map_ranges(old, new, [r[:2]])]
+                if runs:
+                    lst = existing.value.args[0].args[1]
+                    a, b = src.span(lst)
+                    out.append(Edit(src.rel, a, b, "[" + ", ".join("(" + ", ".join(
+                        str(v) if isinstance(v, int) else py_str(str(v)) for v in r) + ")" for r in runs) + "]"))
+                    continue
+            else:
+                continue
+            if kind == "highlight" and kind in styles:
+                hl = self._chain_call(src, call, "add_background_rectangle")
+                if hl is not None:                     # a highlight of the whole text gives way to these ranges
+                    out.append(self._remove_chain_call(src, hl))
+            if not runs:
+                if existing is not None:
+                    a, b = _stmt_lines(src, existing)
+                    out.append(Edit(src.rel, a, b, ""))
+                continue
+            if var is None:
+                var, named = self._ensure_var(obj, src, top, stmt)
+                naming = named[0]
+                edits = _fold_into(src, top, stmt, naming, edits)
+            col = py_str((obj.get("color") or "#FFFFFF").upper())
+            visible = [k for k, ch in enumerate(new) if not ch.isspace()]
+            whole = kind != "highlight" and len(runs) == 1 and (not visible or (runs[0][0] <= visible[0] and runs[0][1] > visible[-1]))
+            if whole:
+                code = f"{var}.add({kind}({var}, color={col}))  # manimble {kind}"
+            elif kind == "highlight":
+                lit = "[" + ", ".join(f"({int(r[0])}, {int(r[1])}, {py_str(str(r[2]).upper())})" for r in runs) + "]"
+                code = f"{var}.add_to_back({CHAR_HELPERS[kind]}({var}, {lit}))  # manimble {kind}"
+            else:
+                lit = "[" + ", ".join(f"({int(r[0])}, {int(r[1])})" for r in runs) + "]"
+                code = f"{var}.add({CHAR_HELPERS[kind]}({var}, {lit}, color={col}))  # manimble {kind}"
+            helpers.append(kind if whole else CHAR_HELPERS[kind])
+            if existing is not None:
+                a, b = _stmt_lines(src, existing)
+                out.append(Edit(src.rel, a, b, " " * existing.col_offset + code + "\n"))
+            else:
+                out.append(_after_stmt(src, stmt, code))
+        if helpers:
+            out += ensure_helpers(self.p, src, list(dict.fromkeys(helpers)))
+        if naming is not None:
+            out.insert(0, naming)
+        return _merge_helper_edits(edits + out)
+
+    def plan_decoration(self, obj: dict, kind: str, on: bool) -> list[Edit]:
+        """Underline / strikethrough: Manim text has neither, so a line is attached to the text object
+        (`t.add(Underline(t, ...))`), which then moves, scales and recolours with it."""
+        if kind not in ("underline", "strike"):
+            raise EditError(f"unknown decoration {kind}")
+        if obj["kind"] not in ("text", "tex"):
+            raise EditError("only text and formulas can be underlined or struck through")
+        src, call, top, stmt = self._creation(obj)
+        var = _assigned_name(stmt, top)
+        existing = self._decoration_stmt(src, stmt, var, kind) if var else None
+        if not on:
+            if existing is None:
+                return []
+            a, b = _stmt_lines(src, existing)
+            return [Edit(src.rel, a, b, "")]
+        if existing is not None:
+            return []
+        edits: list[Edit] = []
+        if not var:
+            var, edits = self._ensure_var(obj, src, top, stmt)
+        edits += self._ensure_helpers(src)
+        # the text's rendered colour as a literal: a Text with a default colour reports get_color() as black
+        col = py_str((obj.get("color") or "#FFFFFF").upper())
+        edits.append(_after_stmt(src, stmt, f"{var}.add({kind}({var}, color={col}))  # manimble {kind}"))
+        return edits
+
+    def _ensure_helpers(self, src: Src) -> list[Edit]:
+        """Make sure the deck has manimble_helpers.py and this file imports strike/underline from it."""
+        return ensure_helpers(self.p, src, ["strike", "underline"])
+
+    def _chain(self, src: Src, call):
+        """The method calls chained onto `call`, innermost first (call itself included)."""
+        out = [call]
+        node = call
+        while True:
+            p = src.parent.get(node)
+            if isinstance(p, ast.Attribute) and p.value is node:
+                pp = src.parent.get(p)
+                if isinstance(pp, ast.Call) and pp.func is p:
+                    out.append(pp)
+                    node = pp
+                    continue
+            return out
+
+    def _chain_call(self, src: Src, call, name: str):
+        return next((c for c in self._chain(src, call) if isinstance(c.func, ast.Attribute) and c.func.attr == name), None)
+
+    def _remove_chain_call(self, src: Src, c) -> Edit:
+        """Drop `.name(...)` from a method chain."""
+        a = src.span(c.func.value)[1]
+        b = src.span(c)[1]
+        return Edit(src.rel, a, b, "")
+
+    def plan_highlight(self, obj: dict, color: str | None, opacity: float = 0.6) -> list[Edit]:
+        """Text highlight: a background rectangle behind the text (`.add_background_rectangle(...)`)."""
+        if obj["kind"] not in ("text", "tex"):
+            raise EditError("only text and formulas can be highlighted")
+        src, call, top, stmt = self._creation(obj)
+        existing = self._chain_call(src, call, "add_background_rectangle")
+        if color is None:
+            return [self._remove_chain_call(src, existing)] if existing is not None else []
+        args = f"color={py_str(color.upper())}, opacity={fmt(opacity, 2)}"
+        if existing is not None:
+            a = src.span(existing.func)[1]
+            b = src.span(existing)[1]
+            return [Edit(src.rel, a, b, f"({args})")]
+        return [self._append_chain(obj["frames"], f".add_background_rectangle({args})")]
+
+    def _link_call(self, src: Src, call):
+        """The `.set(manimble_link=...)` in the object's method chain, if any."""
+        return next((c for c in self._chain(src, call) if isinstance(c.func, ast.Attribute) and c.func.attr == "set"
+                     and any(k.arg == "manimble_link" for k in c.keywords)), None)
+
+    def link_of(self, obj: dict) -> str | None:
+        """The hyperlink a text object opens when clicked in a show."""
+        try:
+            src, call, top, stmt = self._creation(obj)
+        except EditError:
+            return None
+        c = self._link_call(src, call)
+        kw = next((k.value for k in c.keywords if k.arg == "manimble_link"), None) if c is not None else None
+        return kw.value if isinstance(kw, ast.Constant) and isinstance(kw.value, str) and kw.value else None
+
+    def plan_link(self, obj: dict, url: str | None) -> list[Edit]:
+        """Hyperlink: the URL rides on the text object (`.set(manimble_link="...")`), so it moves with it; the show
+        makes the text's box clickable."""
+        if obj["kind"] not in ("text", "tex"):
+            raise EditError("only text and formulas can have a link")
+        src, call, top, stmt = self._creation(obj)
+        existing = self._link_call(src, call)
+        if not url:
+            return [self._remove_chain_call(src, existing)] if existing is not None else []
+        if existing is not None:
+            return [Edit(src.rel, src.span(existing.func)[1], src.span(existing)[1], f"(manimble_link={py_str(url)})")]
+        return [self._append_chain(obj["frames"], f".set(manimble_link={py_str(url)})")]
+
+    def z_index_of(self, obj: dict) -> float | None:
+        """The literal of the `.set_z_index(...)` in the object's own chain, if it has one."""
+        try:
+            src, call, _, _ = self._creation(obj)
+        except EditError:
+            return None
+        c = self._chain_call(src, call, "set_z_index")
+        try:
+            return float(ast.literal_eval(c.args[0])) if c is not None and c.args else None
+        except (ValueError, TypeError):
+            return None
+
+    def plan_z(self, obj: dict, z: float) -> list[Edit]:
+        """Stacking order: `.set_z_index(z)` on the object's creation chain (manim draws by z_index, then by the
+        order things were added)."""
+        src, call, top, stmt = self._creation(obj)
+        if src.in_loop(stmt):
+            raise EditError("this element is made in a loop; its stacking order is set for all of them in the code")
+        lit = str(int(z)) if float(z).is_integer() else fmt(z)
+        existing = self._chain_call(src, call, "set_z_index")
+        if existing is not None:
+            return [Edit(src.rel, src.span(existing.func)[1], src.span(existing)[1], f"({lit})")]
+        return [self._append_chain(obj["frames"], f".set_z_index({lit})")]
+
+    def _group_stmt(self, group: dict):
+        """(src, stmt) of a `g = Group(...)  # manimble group` line, from the group's frames."""
+        fr = group["frames"][0]
+        src = self.p.src(fr["file"])
+        call = src.find_call(fr["pos"])
+        stmt = call
+        while stmt is not None and not isinstance(stmt, ast.stmt):
+            stmt = src.parent.get(stmt)
+        if stmt is None:
+            raise EditError("group statement not found")
+        return src, stmt
+
+    def plan_ungroup(self, groups: list[dict]) -> list[Edit]:
+        """Remove the group lines; a group the code goes on to use only loses its `# manimble group` mark."""
+        edits, seen = [], set()
+        for g in groups:
+            src, stmt = self._group_stmt(g)
+            if (src.rel, stmt.lineno) in seen:
+                continue
+            seen.add((src.rel, stmt.lineno))
+            a, b = _stmt_lines(src, stmt)
+            name = _assigned_name(stmt, stmt.value) if isinstance(stmt, ast.Assign) else None
+            fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            used = name is None or any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+                                       for n in ast.walk(fdef if fdef is not None else src.tree))
+            if not used:
+                edits.append(Edit(src.rel, a, b, ""))
+                continue
+            line = src.data[a:b].decode("utf-8")
+            i = line.find("# manimble group")
+            j = len(line[:i].rstrip())
+            edits.append(Edit(src.rel, a + len(line[:j].encode("utf-8")), a + len(line[:i + len("# manimble group")].encode("utf-8")), ""))
+        return edits
+
+    def plan_group(self, objs: list[dict], old_groups: list[dict]) -> list[Edit]:
+        """Group: `group1 = Group(a, b, ...)  # manimble group` after the last of the members is made. The
+        line draws nothing; the editor selects, moves and orders the members together. Members already in
+        groups are regrouped (their old group lines go)."""
+        edits = self.plan_ungroup(old_groups)
+        names, where, fdef0 = [], [], None
+        for obj in objs:
+            src, call, top, stmt = self._creation(obj)
+            fdef = src.enclosing(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if fdef is None or (fdef0 is not None and (fdef is not fdef0[1] or src.rel != fdef0[0].rel)):
+                raise EditError("only elements made in the same slide's code can be grouped")
+            fdef0 = (src, fdef)
+            if src.in_loop(stmt):
+                raise EditError("an element made in a loop cannot be grouped on its own")
+            try:
+                var, pre = self._ensure_var(obj, src, top, stmt, taken=set(names))
+            except EditError:
+                raise EditError("give each element a name in the source first (for example `t = Text(...)`), "
+                                "then they can be grouped") from None
+            if not pre and sum(1 for n in ast.walk(fdef) if isinstance(n, ast.Name) and n.id == var
+                               and isinstance(n.ctx, ast.Store)) > 1:
+                raise EditError(f"`{var}` names more than one element in the code; give each its own name to group them")
+            edits += pre
+            names.append(var)
+            anc = stmt                                   # the statement directly in the function's body
+            while src.parent.get(anc) is not fdef:
+                anc = src.parent.get(anc)
+            where.append(anc)
+        src, fdef = fdef0
+        used = {n.id for n in ast.walk(fdef) if isinstance(n, ast.Name)}
+        i = 1
+        while f"group{i}" in used:
+            i += 1
+        last = max(where, key=lambda s: s.end_lineno)
+        k = fdef.body.index(last)            # past the `self.add(member)` lines that follow
+        while k + 1 < len(fdef.body) and isinstance(nx := fdef.body[k + 1], ast.Expr) and isinstance(nx.value, ast.Call) \
+                and ast.unparse(nx.value.func) == "self.add" and nx.value.args \
+                and all(isinstance(x, ast.Name) and x.id in names for x in nx.value.args):
+            k += 1
+        last = fdef.body[k]
+        edits.append(_after_stmt(src, last, f"group{i} = Group({', '.join(dict.fromkeys(names))})  # manimble group"))
+        return edits
+
+    def _text_call(self, obj: dict, what: str):
+        """The Text(...) / Paragraph(...) call itself; it must be written in the slide, not in a helper."""
+        if obj["kind"] != "text":
+            raise EditError(f"{what} applies to text")
+        if len(obj["frames"]) > 1:
+            raise EditError(f"this text is made by {obj['frames'][0]['func']}(); {what} can only be set on a "
+                            "Text(...) written in the slide itself")
+        fr = obj["frames"][0]
+        src = self.p.src(fr["file"])
+        call = src.find_call(fr["pos"])
+        if call is None or _func_name(call) not in ("Text", "Paragraph"):
+            raise EditError(f"{what} can only be set on a Text(...) written in the slide itself")
+        return src, call
+
+    def plan_align(self, obj: dict, value: str) -> list[Edit]:
+        """Paragraph alignment: a multi-line Text becomes a Paragraph(line, line, ..., alignment=...). Text in a
+        frame also moves to that side of its frame (its move_to() anchor is rewritten when it has one)."""
+        if value == "justify":
+            raise EditError("Manim cannot justify text with manual line breaks; use left, centre or right")
+        if value not in ("left", "center", "right"):
+            raise EditError(f"unknown alignment {value}")
+        src, call = self._text_call(obj, "alignment")
+        frame = self.frame_box(obj)
+        anchor = self.plan_anchor(obj, frame, value, frame["v"]) if frame else []
+        if _func_name(call) == "Paragraph":
+            kw = next((k for k in call.keywords if k.arg == "alignment"), None)
+            if kw is not None:
+                if isinstance(kw.value, ast.Constant) and kw.value.value == value:
+                    return anchor
+                a, b = src.span(kw.value)
+                return [Edit(src.rel, a, b, py_str(value))] + anchor
+            return [insert_kwarg(src, call, "alignment", py_str(value))] + anchor
+        if value == "left" and not frame:
+            return []                      # a Text already aligns its lines to the left
+        if not call.args:
+            raise EditError("the text is passed by keyword; alignment needs Text(\"...\")")
+        first = call.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            lines = first.value.split("\n")
+            if len(lines) < 2 and not frame:
+                raise EditError("alignment shows on text with several lines (press ↵ in the text box to add one)")
+            new_first = ", ".join(py_str(line) for line in lines)
+        elif isinstance(first, ast.Name):
+            new_first = f'*{first.id}.split("\\n")'
+        else:
+            raise EditError("the text is computed; alignment can only be set on a plain string")
+        fa, fb = src.span(call.func)
+        a, b = src.span(first)
+        return [Edit(src.rel, fa, fb, "Paragraph"), Edit(src.rel, a, b, new_first),
+                insert_kwarg(src, call, "alignment", py_str(value))] + anchor
+
+    @staticmethod
+    def frame_anchor(frame: dict, align: str, valign: str) -> tuple[tuple[float, float], str]:
+        """Where text sits in its frame: (point, aligned_edge name) for move_to(), BOX_PAD in from the edges."""
+        x0, y0, w, h = frame["x"], frame["y"], frame["w"], frame["h"]
+        xs = {"left": (x0 + BOX_PAD, "L"), "center": (x0 + w / 2, ""), "right": (x0 + w - BOX_PAD, "R")}
+        ys = {"top": (y0 - BOX_PAD, "U"), "mid": (y0 - h / 2, "")}
+        (x, ex), (y, ey) = xs.get(align, xs["left"]), ys.get(valign, ys["top"])
+        edge = ey + ex
+        names = {"UL": "UL", "U": "UP", "UR": "UR", "L": "LEFT", "": "ORIGIN", "R": "RIGHT"}
+        return (x, y), names[edge]
+
+    def plan_anchor(self, obj: dict, frame: dict, align: str, valign: str) -> list[Edit]:
+        """Rewrite the text's own move_to(point, aligned_edge=...) so it sits at `align`/`valign` in its frame.
+        Nothing when the text is positioned some other way (the caller then measures and moves it)."""
+        own = [e for e in obj["events"] if e["own"] and e["method"] in
+               ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "arrange", "set_x", "set_y")]
+        if len(own) != 1 or own[0]["method"] != "move_to":
+            return []
+        ev = own[0]
+        t = locate(self.p, ev["frames"], 0, "point_or_mobject", 0, resolve_globals=False)
+        if t.kind != "node" or t.frame_index != len(ev["frames"]) - 1:
+            return []
+        call = t.src.parent.get(t.node)
+        if not isinstance(call, ast.Call) or not call.args or call.args[0] is not t.node:
+            return []
+        (x, y), edge = self.frame_anchor(frame, align, valign)
+        a, b = t.src.span(t.node)
+        edits = [Edit(t.src.rel, a, b, f"({fmt(x)}, {fmt(y)}, 0)")]
+        kw = next((k for k in call.keywords if k.arg == "aligned_edge"), None)
+        if kw is not None:
+            ka, kb = t.src.span(kw.value)
+            edits.append(Edit(t.src.rel, ka, kb, edge))
+        elif edge != "ORIGIN":
+            edits.append(insert_kwarg(t.src, call, "aligned_edge", edge))
+        return edits
+
+    def _columns_group(self, src: Src, call):
+        """(VGroup call, arrange call) when `call` is one column of VGroup(Text, Text, ...).arrange(RIGHT, ...)."""
+        p = src.parent.get(call)
+        if not (isinstance(p, ast.Call) and _func_name(p) == "VGroup" and call in p.args and len(p.args) >= 2
+                and all(isinstance(a, ast.Call) and _func_name(a) in ("Text", "Paragraph") for a in p.args)):
+            return None
+        arrange = None
+        pp = src.parent.get(p)
+        if isinstance(pp, ast.Attribute) and pp.attr == "arrange":
+            ppp = src.parent.get(pp)
+            if isinstance(ppp, ast.Call) and ppp.func is pp:
+                arrange = ppp
+        return p, arrange
+
+    def plan_columns(self, obj: dict, n: int) -> list[Edit]:
+        """Lay the lines of a text out in n columns: VGroup(Text(...), Text(...)).arrange(RIGHT, ...)."""
+        if obj["kind"] != "text":
+            raise EditError("columns apply to text")
+        src, call, top, stmt = self._creation(obj)
+
+        def lines_of(c):
+            if _func_name(c) == "Text" and c.args and isinstance(c.args[0], ast.Constant) and isinstance(c.args[0].value, str):
+                return c.args[0].value.split("\n")
+            if _func_name(c) == "Paragraph" and c.args and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in c.args):
+                return [a.value for a in c.args]
+            raise EditError("columns need a Text(\"...\") with a plain string written in the slide")
+
+        skip = {"t2c", "t2w", "t2s", "t2f", "t2g", "alignment"}
+        grp = self._columns_group(src, call)
+        if grp is not None:
+            vgroup, arrange = grp
+            lines = [line for c in vgroup.args for line in lines_of(c)]
+            kws = [src.text(k) for k in vgroup.args[0].keywords if k.arg not in skip]
+            a = src.span(vgroup)[0]
+            b = src.span(arrange if arrange is not None else vgroup)[1]
+        else:
+            if len(obj["frames"]) > 1:
+                raise EditError(f"this text is made by {obj['frames'][0]['func']}(); columns can only be set on a "
+                                "Text(...) written in the slide itself")
+            lines = lines_of(call)
+            kws = [src.text(k) for k in call.keywords if k.arg not in skip]
+            a, b = src.span(call)
+        n = max(1, min(int(n), len(lines)))
+        kw = (", " + ", ".join(kws)) if kws else ""
+        if n == 1:
+            new = f"Text({py_str(chr(10).join(lines))}{kw})"
+        else:
+            per = math.ceil(len(lines) / n)
+            chunks = [lines[i * per:(i + 1) * per] for i in range(n)]
+            chunks = [c for c in chunks if c]
+            new = ("VGroup(" + ", ".join(f"Text({py_str(chr(10).join(c))}{kw})" for c in chunks)
+                   + ").arrange(RIGHT, buff=0.8, aligned_edge=UP)")
+        return [Edit(src.rel, a, b, new)]
+
+    def format_info(self, obj: dict) -> dict:
+        """What the formatting controls should show for a text object."""
+        info = {"underline": False, "strike": False, "highlight": None, "align": None, "columns": 1, "lineSpacing": None}
+        try:
+            src, call, top, stmt = self._creation(obj)
+        except EditError:
+            return info
+        hl = self._chain_call(src, call, "add_background_rectangle")
+        if hl is not None:
+            col = next((k.value for k in hl.keywords if k.arg == "color"), None)
+            info["highlight"] = col.value if isinstance(col, ast.Constant) and isinstance(col.value, str) else "on"
+        var = _assigned_name(stmt, top)
+        if var:
+            for kind in ("underline", "strike"):
+                info[kind] = self._decoration_stmt(src, stmt, var, kind) is not None
+        info["link"] = self.link_of(obj)
+        if self._columns_group(src, call) is not None:
+            info["columns"] = len(self._columns_group(src, call)[0].args)
+        if obj["kind"] == "text":
+            try:
+                tsrc = self.p.src(obj["frames"][0]["file"])
+                tcall = tsrc.find_call(obj["frames"][0]["pos"])
+            except Exception:
+                tcall = None
+            if tcall is not None and _func_name(tcall) == "Paragraph":
+                kw = next((k.value for k in tcall.keywords if k.arg == "alignment"), None)
+                info["align"] = kw.value if isinstance(kw, ast.Constant) and isinstance(kw.value, str) else "left"
+            elif tcall is not None:
+                info["align"] = "left"
+            t = locate(self.p, obj["frames"], 0, "line_spacing", None, resolve_globals=True)
+            if t.kind == "node" and isinstance(t.node, ast.Constant) and isinstance(t.node.value, (int, float)):
+                info["lineSpacing"] = float(t.node.value)
+            frame = self.frame_box(obj)
+            if frame:
+                info["valign"] = frame["v"]
+                info["align"] = info["align"] or "left"
+        return info
+
+    def plan_clear_format(self, obj: dict) -> list[Edit]:
+        """Remove character formatting: bold, italic, colour, per-range styles, line spacing, highlight, under/strike."""
+        edits: list[Edit] = []
+        src, call, top, stmt = self._creation(obj)
+        hl = self._chain_call(src, call, "add_background_rectangle")
+        if hl is not None:
+            edits.append(self._remove_chain_call(src, hl))
+        var = _assigned_name(stmt, top)
+        if var:
+            for kind in ("underline", "strike"):
+                s = self._decoration_stmt(src, stmt, var, kind)
+                if s is not None:
+                    a, b = _stmt_lines(src, s)
+                    edits.append(Edit(src.rel, a, b, ""))
+        last = len(obj["frames"]) - 1
+        drop: dict = {}            # call -> {keyword nodes}
+        for k in ("weight", "slant", "color", "t2c", "t2w", "t2s", "t2f", "t2g", "line_spacing", "gradient"):
+            t = locate(self.p, obj["frames"], 0, k, None, resolve_globals=False)
+            if t.kind != "node" or t.frame_index != last:
+                continue
+            kw = t.src.parent.get(t.node)
+            c = t.src.parent.get(kw) if isinstance(kw, ast.keyword) else None
+            if isinstance(c, ast.Call):
+                drop.setdefault(id(c), (t.src, c, set()))[2].add(kw)
+        for _, (ksrc, c, kws) in drop.items():
+            edits.append(remove_kwargs(ksrc, c, kws))
+        return edits
+
+    def plan_size(self, obj: dict, w: float | None, h: float | None) -> list[tuple[str, list[Edit]]]:
+        """Width and/or height in manim units, independently (stretching when both are given)."""
+        attempts: list[tuple[str, list[Edit]]] = []
+        last = len(obj["frames"]) - 1
+        fr = obj["frames"][0]
+        src0 = self.p.src(fr["file"])
+        c0 = src0.find_call(fr["pos"])
+        if c0 is not None and _func_name(c0) in ("Rectangle", "RoundedRectangle", "Ellipse"):
+            edits: list | None = []
+            for k, v in (("width", w), ("height", h)):
+                if v is None:
+                    continue
+                t = locate(self.p, obj["frames"], 0, k, None, resolve_globals=False)
+                if t.kind == "node" and t.via is None and t.frame_index == last:
+                    a, b = t.src.span(t.node)
+                    edits.append(Edit(t.src.rel, a, b, fmt(v, 4)))
+                elif t.kind == "missing" and t.frame_index == last:
+                    edits.append(insert_kwarg(t.src, t.call, k, fmt(v, 4)))
+                else:
+                    edits = None
+                    break
+            if edits:
+                attempts.append(("changed the width/height arguments", edits))
+        if (w is None) != (h is None):
+            k, v = ("width", w) if w is not None else ("height", h)
+            own = [e for e in obj["events"] if e["own"] and e["method"] == "set" and isinstance(e["kwargs"].get(k), (int, float))]
+            if own:
+                t = locate(self.p, own[-1]["frames"], 0, k, None, resolve_globals=False)
+                e = self._size_edit(t, own[-1], v)
+                if e is not None:
+                    attempts.append((f"changed the set({k}=...) call", [e]))
+        text = "".join(f".stretch_to_fit_{k}({fmt(v, 4)})" for k, v in (("width", w), ("height", h)) if v is not None)
+        own_layout = [e for e in obj["events"] if e["own"] and e["method"] in
+                      ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "scale", "set",
+                       "set_width", "set_height", "scale_to_fit_width", "scale_to_fit_height", "rotate")]
+        if own_layout:
+            attempts.append(("stretched after the positioning", [self._append_chain(own_layout[-1]["frames"], text)]))
+        attempts.append(("stretched where the object is created", [self._append_chain(obj["frames"], text)]))
+        return attempts
+
+    def plan_rotate(self, obj: dict, delta: float) -> list[tuple[str, list[Edit]]]:
+        """Rotate by delta radians (on top of the object's current rotation)."""
+        attempts: list[tuple[str, list[Edit]]] = []
+        own = [e for e in obj["events"] if e["own"] and e["method"] == "rotate"
+               and ((e["args"] and isinstance(e["args"][0], (int, float))) or isinstance(e["kwargs"].get("angle"), (int, float)))]
+        if own:
+            ev = own[-1]
+            t = locate(self.p, ev["frames"], 0, "angle", 0, resolve_globals=False)
+            if t.kind == "node" and t.via is None and t.frame_index == len(ev["frames"]) - 1:
+                cur = ev["args"][0] if ev["args"] else ev["kwargs"]["angle"]
+                a, b = t.src.span(t.node)
+                attempts.append(("adjusted the rotate() angle", [Edit(t.src.rel, a, b, deg_expr(cur + delta))]))
+        text = f".rotate({deg_expr(delta)})"
+        own_layout = [e for e in obj["events"] if e["own"] and e["method"] in
+                      ("shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "scale", "set",
+                       "set_width", "set_height", "scale_to_fit_width", "scale_to_fit_height", "rotate")]
+        if own_layout:
+            attempts.append(("appended .rotate() after the positioning", [self._append_chain(own_layout[-1]["frames"], text)]))
+        attempts.append(("appended .rotate() where the object is created", [self._append_chain(obj["frames"], text)]))
+        return attempts
+
+    def plan_table(self, obj: dict, rows: list) -> list[Edit]:
+        t = locate(self.p, obj["frames"], 0, "table", 0, resolve_globals=False)
+        if t.kind != "node":
+            raise EditError("the table data is generated by code")
+        # a plain Table builds each cell with Paragraph, which needs strings; MathTable takes numbers as they are
+        call = self.p.src(obj["frames"][0]["file"]).find_call(obj["frames"][0]["pos"])
+        fname = None if call is None else (call.func.id if isinstance(call.func, ast.Name) else getattr(call.func, "attr", None))
+        words = fname == "Table"
+
+        def cell(c):
+            if words:
+                return py_str(str(c).strip())
+            if isinstance(c, (int, float)):
+                return fmt(c, 6)
+            c = str(c).strip()
+            try:
+                return str(int(c)) if c.lstrip("-").isdigit() else fmt(float(c), 6) if c.replace(".", "", 1).lstrip("-").isdigit() else py_str(c)
+            except ValueError:
+                return py_str(c)
+        lit = "[" + ", ".join("[" + ", ".join(cell(c) for c in r) + "]" for r in rows) + "]"
+        a, b = t.src.span(t.node)
+        edits = [Edit(t.src.rel, a, b, lit)]
+        if call is not None and fname in ("Table", "MathTable") and any(str(c).strip() == "" for r in rows for c in r):
+            e = locate(self.p, obj["frames"], 0, "element_to_mobject", None, resolve_globals=False)
+            if e.kind == "missing" and e.call is call:
+                edits.append(insert_kwarg(e.src, call, "element_to_mobject", BLANK_CELLS["word" if words else "math"]))
+        return edits
+
+
+class EditError(Exception):
+    pass
+
+
+# Manim collapses a table row or column whose entries are all blank, so a blank cell holds an invisible placeholder
+BLANK_CELLS = {
+    "word": 'lambda s, **kw: Paragraph(s, **kw) if s != "" else Paragraph("Cell", **kw).set_opacity(0)',
+    "math": 'lambda s, **kw: MathTex(s, **kw) if s != "" else MathTex(r"\\text{Cell}", **kw).set_opacity(0)',
+}
+
+HELPERS_FILE = "manimble_helpers.py"
+HELPERS_SOURCE = '''"""Helpers Manimble adds to a deck for what it writes into slides (underline, strikethrough, sub-slide numbers).
+
+Plain Manim code; edit or inline it as you like.
+"""
+
+from manim import VGroup, Line, BackgroundRectangle
+
+
+def text_lines(mobject):
+    """The glyphs of a Text / Paragraph / MathTex grouped into visual lines, top to bottom."""
+    glyphs = [m for m in mobject.family_members_with_points() if not isinstance(m, (Line, BackgroundRectangle))]
+    lines = []                      # [top, bottom, [glyphs]]
+    for g in sorted(glyphs, key=lambda m: -m.get_top()[1]):
+        top, bottom = g.get_top()[1], g.get_bottom()[1]
+        if lines and top > lines[-1][1]:            # overlaps the current line vertically
+            lines[-1][1] = min(lines[-1][1], bottom)
+            lines[-1][2].append(g)
+        else:
+            lines.append([top, bottom, [g]])
+    return [VGroup(*gs) for _, _, gs in lines]
+
+
+def _median(values):
+    v = sorted(values)
+    return v[len(v) // 2]
+
+
+def strike(mobject, color="#FFFFFF", stroke_width=3):
+    """One line through the middle of every line of text."""
+    out = VGroup()
+    for line in text_lines(mobject):
+        y = _median(g.get_center()[1] for g in line)
+        out.add(Line((line.get_left()[0], y, 0), (line.get_right()[0], y, 0), color=color, stroke_width=stroke_width))
+    return out
+
+
+def underline(mobject, color="#FFFFFF", stroke_width=3, buff=0.06):
+    """One line under the baseline of every line of text."""
+    out = VGroup()
+    for line in text_lines(mobject):
+        y = _median(g.get_bottom()[1] for g in line) - buff
+        out.add(Line((line.get_left()[0], y, 0), (line.get_right()[0], y, 0), color=color, stroke_width=stroke_width))
+    return out
+'''
+
+SUB_SLIDES_SOURCE = '''
+
+def sub_slides(scene, label):
+    """A slide number ending in a sub-slide count ("29 / 47 · 1/3") that counts on at every scene.next_slide()."""
+    import re
+    from manim import Text, config, LEFT, RIGHT, ORIGIN
+    m = re.fullmatch(r"(.*?)(\\d+)/(\\d+)", label.original_text)
+    if not m:
+        return label
+    head, shown, count = m.group(1), [int(m.group(2))], int(m.group(3))
+    style = dict(font=label.font, font_size=label.font_size, slant=label.slant, weight=label.weight)
+    glyph = label.submobjects[0] if label.submobjects else label
+    color, opacity = glyph.get_fill_color(), glyph.get_fill_opacity()
+    advance = scene.next_slide
+
+    def next_slide(*args, **kwargs):
+        result = advance(*args, **kwargs)
+        if shown[0] < count:
+            shown[0] += 1
+            new = Text(f"{head}{shown[0]}/{count}", **style).set_fill(color, opacity)
+            x = label.get_center()[0]
+            edge = RIGHT if x > config.frame_width / 6 else LEFT if x < -config.frame_width / 6 else ORIGIN
+            label.become(new.move_to(label, aligned_edge=edge))
+        return result
+
+    scene.next_slide = next_slide
+    return label
+'''
+
+CHARS_SOURCE = '''
+
+def text_glyphs(mobject, chars):
+    """The glyphs of the characters in [start, end) ranges of a Text or Paragraph (its lines joined by newlines),
+    one VGroup per range: Manim makes one glyph per character that is not white space."""
+    from manim import VGroup, BackgroundRectangle
+    skip = lambda m: getattr(m, "manimble_decoration", False) or isinstance(m, BackgroundRectangle)
+    text = getattr(mobject, "original_text", None)
+    glyphs = [g for g in mobject.submobjects if not skip(g)]
+    if text is None and hasattr(mobject, "lines_text"):
+        text = mobject.lines_text.original_text
+        glyphs = [g for line in glyphs for g in line.submobjects]
+    text = text or ""
+    # a ligature draws two or three characters as one glyph (fi, fl, ff, ffi, ffl in most fonts): when there are fewer
+    # glyphs than characters, those share one, from the left, until the counts agree
+    short = sum(not ch.isspace() for ch in text) - len(glyphs)
+    index, n, k = [], 0, 0
+    while k < len(text):
+        tie = next((len(lig) for lig in ("ffi", "ffl", "fi", "fl", "ff") if short >= len(lig) - 1
+                    and text.startswith(lig, k)), 1) if short > 0 else 1
+        index += [n] * tie
+        short -= tie - 1
+        n += not text[k].isspace()
+        k += tie
+    index.append(n)
+    size = len(index) - 1
+    return [VGroup(*glyphs[index[max(0, min(r[0], size))]:index[max(0, min(r[1], size))]]) for r in chars]
+
+
+def _chars_lines(mobject, part):
+    """(line of `part`, the whole text's line it sits on) for each visual line of some of a text's glyphs."""
+    full = text_lines(mobject)
+    for line in (text_lines(part) if len(part) else []):
+        yield line, min(full, key=lambda f: abs(f.get_center()[1] - line.get_center()[1]))
+
+
+def underline_chars(mobject, chars, color="#FFFFFF", stroke_width=3, buff=0.06):
+    """underline() of some characters only ([start, end) ranges), under the baseline of their whole line."""
+    from manim import VGroup, Line
+    out = VGroup()
+    for part in text_glyphs(mobject, chars):
+        for line, whole in _chars_lines(mobject, part):
+            y = _median(g.get_bottom()[1] for g in whole) - buff
+            out.add(Line((line.get_left()[0], y, 0), (line.get_right()[0], y, 0), color=color, stroke_width=stroke_width))
+    out.manimble_decoration = True
+    return out
+
+
+def strike_chars(mobject, chars, color="#FFFFFF", stroke_width=3):
+    """strike() through some characters only ([start, end) ranges), at the middle of their whole line."""
+    from manim import VGroup, Line
+    out = VGroup()
+    for part in text_glyphs(mobject, chars):
+        for line, whole in _chars_lines(mobject, part):
+            y = _median(g.get_center()[1] for g in whole)
+            out.add(Line((line.get_left()[0], y, 0), (line.get_right()[0], y, 0), color=color, stroke_width=stroke_width))
+    out.manimble_decoration = True
+    return out
+
+
+def highlight_chars(mobject, chars, opacity=0.6, buff=0.06):
+    """A highlighter colour behind some characters ([start, end, colour] ranges), the height of their whole line."""
+    from manim import VGroup, Rectangle
+    out = VGroup()
+    for r, part in zip(chars, text_glyphs(mobject, chars)):
+        for line, whole in _chars_lines(mobject, part):
+            top, bottom = whole.get_top()[1], whole.get_bottom()[1]
+            out.add(Rectangle(width=line.width + 2 * buff, height=top - bottom + 2 * buff, stroke_width=0,
+                              fill_color=r[2], fill_opacity=opacity).move_to((line.get_center()[0], (top + bottom) / 2, 0)))
+    out.manimble_decoration = True
+    return out
+'''
+
+# appended to an existing manimble_helpers.py that lacks them
+HELPER_FUNCS = {"sub_slides": SUB_SLIDES_SOURCE, "underline_chars": CHARS_SOURCE, "strike_chars": CHARS_SOURCE,
+                "highlight_chars": CHARS_SOURCE}
+HELPERS_SOURCE += SUB_SLIDES_SOURCE + CHARS_SOURCE
+
+
+def ensure_helpers(project, src: Src, wanted: list[str]) -> list[Edit]:
+    """Edits that give the deck manimble_helpers.py with the `wanted` functions and make `src` import them."""
+    edits: list[Edit] = []
+    if HELPERS_FILE not in project.py_files():
+        edits.append(Edit(HELPERS_FILE, 0, 0, HELPERS_SOURCE))
+    else:
+        have = project.read(HELPERS_FILE).decode("utf-8")
+        extra = "".join(dict.fromkeys(HELPER_FUNCS[n] for n in wanted if n in HELPER_FUNCS and f"def {n}(" not in have))
+        if extra:                       # a deck from before this helper existed
+            edits.append(Edit(HELPERS_FILE, len(have.encode("utf-8")), len(have.encode("utf-8")),
+                              ("" if have.endswith("\n") else "\n") + extra))
+    existing = next((n for n in src.tree.body if isinstance(n, ast.ImportFrom) and n.module == "manimble_helpers"), None)
+    if existing is not None:
+        names = [a.name for a in existing.names]
+        if "*" not in names and not set(wanted) <= set(names):
+            a, b = src.span(existing)
+            edits.append(Edit(src.rel, a, b, "from manimble_helpers import "
+                              + ", ".join(names + [n for n in wanted if n not in names])))
+        return edits
+    line = "from manimble_helpers import " + ", ".join(wanted)
+    imports = [n for n in src.tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    if imports:
+        at = src.line_starts[imports[-1].end_lineno] if imports[-1].end_lineno < len(src.line_starts) else len(src.data)
+    elif src.tree.body and isinstance(src.tree.body[0], ast.Expr) and isinstance(src.tree.body[0].value, ast.Constant) \
+            and isinstance(src.tree.body[0].value.value, str):
+        doc = src.tree.body[0]
+        at = src.line_starts[doc.end_lineno] if doc.end_lineno < len(src.line_starts) else len(src.data)
+    else:
+        at = 0
+    edits.append(Edit(src.rel, at, at, line + "\n"))
+    return edits
+
+
+def name_map(obj: dict, name: str):
+    return name
+
+
+def _func_name(call) -> str | None:
+    f = call.func
+    return f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+
+
+def _chain_root(expr):
+    """The node a method chain hangs off: `a.b(c).d()` -> the node for `a`."""
+    n = expr
+    while True:
+        if isinstance(n, ast.Call):
+            n = n.func
+        elif isinstance(n, ast.Attribute):
+            n = n.value
+        else:
+            return n
+
+
+def _ancestors(src, node):
+    out = []
+    p = src.parent.get(node)
+    while p is not None:
+        out.append(p)
+        p = src.parent.get(p)
+    return out
+
+
+def _disjoint(edits):
+    """Drop edits lying inside another edit's range (a cut argument inside a cut statement)."""
+    out = []
+    for e in sorted(edits, key=lambda e: (e.start, -e.end)):
+        if out and out[-1].rel == e.rel and out[-1].start <= e.start and e.end <= out[-1].end:
+            continue
+        out.append(e)
+    return out
+
+
+def _assigned_name(stmt, top) -> str | None:
+    """`name` when the statement is `name = <top>`."""
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name) and stmt.value is top:
+        return stmt.targets[0].id
+    return None
+
+
+def _body_of(src: Src, stmt) -> list:
+    """The statement list (function body, loop body, ...) that contains stmt."""
+    parent = src.parent.get(stmt)
+    for field in ("body", "orelse", "finalbody"):
+        lst = getattr(parent, field, None)
+        if isinstance(lst, list) and stmt in lst:
+            return lst
+    return [stmt]
+
+
+def _stmt_lines(src: Src, stmt) -> tuple[int, int]:
+    """Byte range of the whole lines a statement occupies (comments included)."""
+    a = src.line_starts[stmt.lineno - 1]
+    b = src.line_starts[stmt.end_lineno] if stmt.end_lineno < len(src.line_starts) else len(src.data)
+    return a, b
+
+
+def _shift_of(stmt) -> tuple[float, float] | None:
+    """(x, y) of a `var.shift((x, y, 0))` statement, or None."""
+    call = stmt.value if isinstance(stmt, ast.Expr) else None
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "shift"
+            and len(call.args) == 1 and not call.keywords):
+        return None
+    try:
+        v = ast.literal_eval(call.args[0])
+    except (ValueError, TypeError):
+        return None
+    if isinstance(v, tuple) and len(v) == 3 and all(isinstance(c, (int, float)) for c in v):
+        return float(v[0]), float(v[1])
+    return None
+
+
+def _after_stmt(src: Src, stmt, code: str) -> Edit:
+    """Insert a line of code right after a statement, with its indentation."""
+    indent = " " * stmt.col_offset
+    at = src.line_starts[stmt.end_lineno] if stmt.end_lineno < len(src.line_starts) else len(src.data)
+    if at == len(src.data) and not src.data.endswith(b"\n"):
+        return Edit(src.rel, at, at, "\n" + indent + code)
+    return Edit(src.rel, at, at, indent + code + "\n")
+
+
+def deg_expr(rad: float) -> str:
+    """An angle in radians as a readable `<degrees> * DEGREES` expression."""
+    return f"{fmt(math.degrees(rad), 2)} * DEGREES"
+
+
+def remove_kwargs(src: Src, call: ast.Call, kws: set) -> Edit:
+    """Rewrite a call's argument list without the given keyword nodes."""
+    items = sorted(list(call.args) + list(call.keywords), key=lambda n: (n.lineno, n.col_offset))
+    keep = [src.text(x) for x in items if not any(x is k for k in kws)]
+    a = src.span(items[0])[0]
+    b = src.span(items[-1])[1]
+    return Edit(src.rel, a, b, ", ".join(keep))
+
+
+def insert_kwarg(src: Src, call: ast.Call, name: str, literal: str) -> Edit:
+    last = None
+    for a in list(call.args) + [k.value for k in call.keywords]:
+        if last is None or (a.end_lineno, a.end_col_offset) > (last.end_lineno, last.end_col_offset):
+            last = a
+    if last is None:
+        pos = src.off(call.end_lineno, call.end_col_offset) - 1
+        return Edit(src.rel, pos, pos, f"{name}={literal}")
+    pos = src.off(last.end_lineno, last.end_col_offset)
+    return Edit(src.rel, pos, pos, f", {name}={literal}")
+
+
+_RANGE_KEY = re.compile(r"^\[(-?\d*):(-?\d*)\]$")
+
+
+def _index_map(old: str, new: str) -> list:
+    """old index -> new index through the old -> new diff (None inside replaced text)."""
+    import difflib
+    pos = [None] * (len(old) + 1)
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1 + 1):
+                pos[i1 + k] = j1 + k
+        else:
+            pos[i1], pos[i2] = j1, j2
+    return pos
+
+
+def map_ranges(old: str, new: str, ranges: list) -> list:
+    """[start, end] character ranges of `old` on the same characters of `new` (word-wrapping it, say)."""
+    pos = _index_map(old, new)
+    out = []
+    for i, j in ranges:
+        i, j = max(0, min(int(i), len(old))), max(0, min(int(j), len(old)))
+        a = next((pos[x] for x in range(i, j + 1) if pos[x] is not None), None)
+        b = next((pos[x] for x in range(j, i - 1, -1) if pos[x] is not None), None)
+        if a is not None and b is not None and b > a:
+            out.append([a, b])
+    return out
+
+
+CHAR_STYLES = ("italic", "bold", "color", "underline", "strike", "highlight")
+# what a decoration of part of a text is drawn by (manimble_helpers.py)
+CHAR_HELPERS = {"underline": "underline_chars", "strike": "strike_chars", "highlight": "highlight_chars"}
+_T2 = {"italic": "t2s", "bold": "t2w", "color": "t2c"}
+_BOLD = ("BOLD", "SEMIBOLD", "ULTRABOLD", "HEAVY", "ULTRAHEAVY")
+
+
+def _t2_keys(styles: dict) -> set:
+    return {_T2[k] for k in styles if k in _T2}
+
+
+def t2_literals(text: str, styles: dict, obj: dict) -> dict:
+    """{t2s / t2w / t2c: dict literal, or None for none} for the kinds `styles` names (italic, bold, color):
+    ITALIC / BOLD ranges, NORMAL ones where the whole text is italic or bold (`obj`'s slant / weight) and these
+    characters are not, colours where they are set."""
+    out = {}
+    n = len(text)
+    for kind, key in _T2.items():
+        if kind not in styles:
+            continue
+        vals: list = [None] * n
+        if kind == "color":
+            for a, b, c in styles[kind]:
+                for k in range(max(0, int(a)), min(int(b), n)):
+                    vals[k] = str(c).upper()
+        else:
+            on = [False] * n
+            for a, b, *_ in styles[kind]:
+                for k in range(max(0, int(a)), min(int(b), n)):
+                    on[k] = True
+            attr, yes, all_on = (("slant", "ITALIC", ("ITALIC", "OBLIQUE")) if kind == "italic" else
+                                 ("weight", "BOLD", _BOLD))
+            base = str(obj.get(attr) or "NORMAL").upper() in all_on
+            vals = [None if f == base else (yes if f else "NORMAL") for f in on]
+        runs, k = [], 0
+        while k < n:
+            e = k
+            while e < n and vals[e] == vals[k]:
+                e += 1
+            if vals[k] is not None:
+                runs.append((k, e, vals[k]))
+            k = e
+        out[key] = ("{" + ", ".join(f"{py_str(f'[{a}:{b}]')}: {py_str(v)}" for a, b, v in runs) + "}") if runs else None
+    return out
+
+
+def _set_t2(src: Src, call: ast.Call, text: str, styles: dict, obj: dict) -> list[Edit]:
+    """The call's t2s / t2w / t2c set from `styles` (t2_literals). Other entries of those dicts (words) give way to
+    these ranges; a dict left empty is dropped."""
+    edits = []
+    for key, literal in t2_literals(text, styles, obj).items():
+        kw = next((x for x in call.keywords if x.arg == key), None)
+        if literal is None:
+            if kw is not None:
+                # from the end of the argument before it, so an edit of the text itself (the first argument) stays apart
+                items = sorted(list(call.args) + list(call.keywords), key=lambda x: (x.lineno, x.col_offset))
+                prev = items[items.index(kw) - 1]
+                edits.append(Edit(src.rel, src.span(prev)[1], src.span(kw)[1], ""))
+            continue
+        if kw is not None:
+            a, b = src.span(kw.value)
+            edits.append(Edit(src.rel, a, b, literal))
+        else:
+            edits.append(insert_kwarg(src, call, key, literal))
+    return edits
+
+
+def _fold_into(src: Src, top, stmt, naming: Edit, edits: list) -> list:
+    """`edits` with those inside the statement that `naming` rewrites (`self.add(X)  # c` -> `name = X  # c` +
+    `self.add(name)`) applied to the X and the comment it writes again, and the naming edit changed to match."""
+    sa, eol = naming.start, naming.end
+    ta, tb = src.span(top)
+    sb = src.span(stmt)[1]
+    inner = [e for e in edits if e.rel == src.rel and sa <= e.start and e.end <= eol]
+    if not inner:
+        return edits
+
+    def apply(a, b):
+        part = src.data[a:b]
+        for e in sorted((e for e in inner if a <= e.start and e.end <= b), key=lambda e: e.start, reverse=True):
+            part = part[:e.start - a] + e.text.encode("utf-8") + part[e.end - a:]
+        return part.decode("utf-8")
+    if any(not (ta <= e.start and e.end <= tb) and not (sb <= e.start and e.end <= eol) for e in inner):
+        raise EditError("the text and its formatting cannot be changed together here; change them one after the other")
+    old_top, old_comment = src.text(top), src.data[sb:eol].decode("utf-8").rstrip()
+    naming.text = naming.text.replace(old_top, apply(ta, tb), 1)
+    if old_comment:
+        naming.text = naming.text.replace(old_comment, apply(sb, eol).rstrip(), 1)
+    return [e for e in edits if e not in inner]
+
+
+def _merge_helper_edits(edits: list) -> list:
+    """Edits with repeated ones (two decorations each asking for the helpers' import) given once; inserts at one
+    place in the same file are joined."""
+    out, seen = [], {}
+    for e in edits:
+        k = (e.rel, e.start, e.end)
+        if k in seen:
+            prev = seen[k]
+            if e.text != prev.text and e.start == e.end:
+                if e.text not in prev.text:
+                    prev.text += e.text
+            continue
+        seen[k] = e
+        out.append(e)
+    return out
+
+
+def _shift_text_ranges(src: Src, call: ast.Call, old: str, new: str, skip: set = frozenset()) -> list[Edit]:
+    """Keep Text(..., t2c / t2w / t2s / t2f / t2g = {"[i:j]": ...}) ranges on the same characters after the text is
+    retyped: positions are mapped through the old -> new diff, and a range whose text was deleted is dropped.
+    The keywords in `skip` are left alone."""
+    pos = _index_map(old, new)
+    edits = []
+    for kw in call.keywords:
+        if kw.arg not in ("t2c", "t2w", "t2s", "t2f", "t2g") or kw.arg in skip or not isinstance(kw.value, ast.Dict):
+            continue
+        items, changed = [], False
+        for k, v in zip(kw.value.keys, kw.value.values):
+            m = _RANGE_KEY.match(k.value) if isinstance(k, ast.Constant) and isinstance(k.value, str) else None
+            if m is None:
+                items.append(src.text(k) + ": " + src.text(v))
+                continue
+            i = int(m.group(1) or 0) % (len(old) + 1)
+            j = int(m.group(2)) % (len(old) + 1) if m.group(2) else len(old)
+            a = next((pos[x] for x in range(i, j + 1) if pos[x] is not None), None)
+            b = next((pos[x] for x in range(j, i - 1, -1) if pos[x] is not None), None)
+            changed = True
+            if a is None or b is None or b <= a:
+                continue
+            items.append(py_str(f"[{a}:{b}]") + ": " + src.text(v))
+        if changed:
+            s, e = src.span(kw.value)
+            edits.append(Edit(src.rel, s, e, "{" + ", ".join(items) + "}"))
+    return edits

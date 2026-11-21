@@ -1,0 +1,1295 @@
+"""Manim-side worker for manimble.
+
+Runs inside an environment that has Manim installed.  It speaks JSON lines on
+stdin/stdout and answers two kinds of requests:
+
+  {"cmd": "render", "scene": "Intro", "module": "slides", "out": "/dir"}
+      Execute the scene with animations skipped, snapshot every slide stop to
+      PNG, and report every Text / MathTex / ImageMobject that was created
+      together with the source-code call sites needed to edit it.
+
+  {"cmd": "latex", "tex": "..."}
+      Compile a LaTeX snippet (for the formula editor preview) and return SVG.
+
+Everything the editor learns about the deck is gathered here by *tracing* the
+real execution of the user's code: which source line created each object, and
+which positioning calls (move_to / shift / next_to / set ...) shaped it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import itertools
+import linecache
+import json
+import math
+import os
+import sys
+import traceback
+import types
+import functools
+import time
+import shutil
+
+DECK = os.path.realpath(sys.argv[1])
+os.chdir(DECK)
+sys.path.insert(0, DECK)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # manimble.darkmode, for theme previews
+# Always compile the deck from source: Python validates cached bytecode by mtime (seconds) and size, so an edit that
+# keeps a file's length (e.g. one digit in a coordinate) within the same second would otherwise run the old code.
+sys.dont_write_bytecode = True
+sys.pycache_prefix = os.path.join(os.environ.get("TMPDIR", "/tmp"), "manimble-no-pycache")
+MEDIA_DIR = os.path.abspath(os.environ.get("MANIMBLE_MEDIA_DIR", os.path.join(DECK, "..", "media")))
+MEDIA_DIR_REAL = os.path.realpath(MEDIA_DIR)
+DEPENDENCIES: set[str] = set()
+
+# stdout carries the protocol; anything else printing must go to stderr.
+_proto = os.fdopen(os.dup(1), "w", buffering=1, encoding="utf-8")
+sys.stdout = sys.stderr
+
+import numpy as np  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from manim import config, Scene, Mobject, Text, MathTex, Tex, ImageMobject, Camera, ORIGIN  # noqa: E402
+from manim import Paragraph, BackgroundRectangle, VMobject, MarkupText, ManimColor, Group, SVGMobject  # noqa: E402
+from manim import (FadeIn, FadeOut, Create, Uncreate, Write, Unwrite, DrawBorderThenFill, GrowFromCenter,  # noqa: E402
+                   GrowFromPoint, GrowFromEdge, GrowArrow, SpinInFromNothing, ReplacementTransform,
+                   TransformFromCopy, AnimationGroup, LaggedStart, Transform, MoveToTarget,
+                   Indicate, Flash, Circumscribe, Wiggle, FocusOn)
+from manim.animation.transform import _MethodAnimation  # noqa: E402
+from manim.animation.transform_matching_parts import TransformMatchingAbstractBase  # noqa: E402
+from manim.utils.family import extract_mobject_family_members  # noqa: E402
+from manim.utils.iterables import list_update  # noqa: E402
+from manim.mobject.mobject import _AnimationBuilder  # noqa: E402
+
+
+# ------------------------------------------------------------- shared SVG pool
+# Every worker process has its own manim media dir: LaTeX's cleanup step deletes all non-SVG files in the tex
+# dir, so two workers compiling at once would delete each other's .dvi files. The finished SVGs are the
+# expensive part (a LaTeX run per formula, Pango per text), so each worker publishes the SVGs it makes to a pool
+# next to the per-worker dirs (atomic rename, never a half-written file) and looks there before compiling: a
+# formula the background worker built is not built again by the first edit on its slide.
+_POOL = os.environ.get("MANIMBLE_SHARED_MEDIA") or os.path.join(os.path.dirname(MEDIA_DIR_REAL), "shared")
+
+
+def _pool_fetch(target, sub: str):
+    """Put the pooled copy of `target` (a Path) in place when this worker has none yet."""
+    try:
+        if target.exists():
+            return
+        src = os.path.join(_POOL, sub, target.name)
+        if os.path.exists(src):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f"{target}.{os.getpid()}.tmp"
+            shutil.copyfile(src, tmp)
+            os.replace(tmp, target)
+    except OSError:
+        pass
+
+
+def _pool_publish(path, sub: str):
+    try:
+        path = str(path)
+        dst = os.path.join(_POOL, sub, os.path.basename(path))
+        if not path.endswith(".svg") or os.path.exists(dst) or not os.path.exists(path):
+            return
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = f"{dst}.{os.getpid()}.tmp"
+        try:
+            os.link(path, tmp)
+        except OSError:
+            shutil.copyfile(path, tmp)
+        os.replace(tmp, dst)
+    except OSError:
+        pass
+
+
+def _pool_seed():
+    """SVGs this worker made before there was a pool."""
+    for sub in ("texts", "Tex"):
+        d = os.path.join(MEDIA_DIR, sub)
+        if os.path.isdir(d):
+            for fn in os.listdir(d):
+                if fn.endswith(".svg"):
+                    _pool_publish(os.path.join(d, fn), sub)
+
+
+def _share_text_svgs(cls, colour_of):
+    orig = cls._text2svg
+
+    @functools.wraps(orig)
+    def wrapper(self, color):
+        try:
+            _pool_fetch(config.get_dir("text_dir") / (self._text2hash(colour_of(color)) + ".svg"), "texts")
+        except Exception:                      # noqa: BLE001 - the pool is only a shortcut
+            pass
+        out = orig(self, color)
+        _pool_publish(out, "texts")
+        return out
+    cls._text2svg = wrapper
+
+
+def _share_tex_svgs():
+    import manim.utils.tex_file_writing as tfw
+    import manim.mobject.text.tex_mobject as tm
+    orig = tfw.tex_to_svg_file
+
+    @functools.wraps(orig)
+    def wrapper(expression, environment=None, tex_template=None):
+        try:
+            _pool_fetch(tfw.generate_tex_file(expression, environment, tex_template).with_suffix(".svg"), "Tex")
+        except Exception:                      # noqa: BLE001
+            pass
+        out = orig(expression, environment, tex_template)
+        _pool_publish(out, "Tex")
+        return out
+    tfw.tex_to_svg_file = wrapper
+    tm.tex_to_svg_file = wrapper
+
+
+_share_text_svgs(Text, lambda c: c)
+_share_text_svgs(MarkupText, ManimColor)
+_share_tex_svgs()
+_pool_seed()
+
+
+def _track_project_reads(event, args):
+    """Record files opened by deck code, but the deck's own modules and what Manim and Manimble read or make."""
+    if event != "open" or not args or isinstance(args[0], int):
+        return
+    mode = args[1] if len(args) > 1 else None
+    flags = args[2] if len(args) > 2 and isinstance(args[2], int) else 0
+    if (mode is not None and any(c in str(mode) for c in "wax+")) or flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+        return
+    try:
+        path = os.path.abspath(os.fsdecode(os.fspath(args[0])))
+    except (TypeError, ValueError):
+        return
+    # the deck's own modules are hashed into the slide's key; files in its folders (a package, data) are not
+    if path == DECK or (os.path.dirname(path) == DECK and path.endswith(".py")):
+        return
+    # Manimble's own caches: rendered media, the shared Text/Tex SVG pool, and compiled deck modules.
+    if any(path == media_root or path.startswith(media_root + os.sep)
+           for media_root in {MEDIA_DIR, MEDIA_DIR_REAL, _POOL, os.path.realpath(_POOL),
+                              sys.pycache_prefix, os.path.realpath(sys.pycache_prefix)}):
+        return
+    trusted_roots = (sys.prefix, sys.base_prefix, "/System", "/Library", "/usr", "/opt/homebrew", "/Applications")
+    if any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in trusted_roots):
+        return
+
+    # Only treat an open as a deck dependency when the active Python call stack
+    # came from a source file in the deck. This avoids collecting Manim's own
+    # font, package, and renderer reads.
+    frame = sys._getframe(1)
+    from_deck = False
+    while frame is not None:
+        filename = os.path.abspath(frame.f_code.co_filename)
+        if filename == DECK or filename.startswith(DECK + os.sep):
+            from_deck = True
+            break
+        frame = frame.f_back
+    if not from_deck:
+        return
+
+    # The working project root contains symlinks to the original project's
+    # siblings; preserve those lexical paths so the portable copy can retain
+    # the same relative layout.
+    DEPENDENCIES.add(path)
+
+
+sys.addaudithook(_track_project_reads)
+
+config.verbosity = "ERROR"
+config.progress_bar = "none"
+config.disable_caching = True
+config.write_to_movie = False
+config.save_last_frame = False
+config.preview = False
+config.media_dir = os.path.realpath(MEDIA_DIR)
+
+# ----------------------------------------------------------------- tracing
+
+SEQ = itertools.count(1)
+TRACKED: list = []          # tracked mobjects of the current run, oid == index
+# Side tables keyed by id(); the tuples hold a reference so ids stay unique.
+# (Attributes on the mobjects themselves would be deep-copied by manim.)
+EVENTS: dict = {}           # id(mob) -> (mob, [event, ...])
+PARENTS: dict = {}          # id(mob) -> (mob, [(parent, seq_joined), ...])
+GROUPS: list = []           # (group, members, frames) of every `Group(...)  # manimble group` of the run
+DRAWINGS: dict = {}         # oid -> {"frames", "count"} of each drawing: what one line of code makes in bulk
+DRAWING_BASE = 1_000_000    # a drawing's oid is this plus its first object's, so it stays put across renders
+_pos_cache: dict = {}
+_building = {"on": False}
+
+
+def in_project(filename: str) -> bool:
+    return filename.startswith(DECK + os.sep)
+
+
+def frame_pos(f):
+    code = f.f_code
+    table = _pos_cache.get(code)
+    if table is None:
+        table = _pos_cache[code] = list(code.co_positions())
+    i = f.f_lasti // 2
+    if i < len(table):
+        l, el, c, ec = table[i]
+        if l is not None and c is not None:
+            return [l, c, el, ec]
+    return None
+
+
+_COMPREHENSIONS = {"<listcomp>", "<setcomp>", "<dictcomp>", "<genexpr>"}
+
+
+def project_stack(f):
+    """Project (deck) frames, innermost first.
+
+    Before Python 3.12 a comprehension runs as a function of its own, called from the enclosing code at the
+    comprehension's position, which is not a call site: the comprehension's frame stands in for the enclosing
+    frame (`[SurroundingRectangle(r) for r in rs]` is known by the SurroundingRectangle call)."""
+    out = []
+    hidden = None
+    while f is not None:
+        code = f.f_code
+        if f is not hidden and in_project(code.co_filename):
+            pos = frame_pos(f)
+            if pos:
+                out.append({"file": os.path.relpath(code.co_filename, DECK), "func": code.co_name, "pos": pos})
+        if code.co_name in _COMPREHENSIONS:
+            g = f.f_back
+            while g is not None and code not in g.f_code.co_consts:
+                g = g.f_back
+            if g is not None:
+                if out and out[-1]["func"] == code.co_name:
+                    out[-1]["func"] = g.f_code.co_name
+                hidden = g
+                f = g
+                continue
+        f = f.f_back
+    return out
+
+
+def jsonable(v):
+    if isinstance(v, (bool, int, float, str)) or v is None:
+        return v
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return [float(x) for x in v.tolist()] if v.ndim == 1 else None
+    if isinstance(v, (list, tuple)):
+        out = [jsonable(x) for x in v]
+        return out
+    if isinstance(v, Mobject):
+        return {"mobject": True}
+    return None
+
+
+def record_event(mob, method, args, kwargs, frame):
+    if not in_project(frame.f_code.co_filename):
+        return
+    stack = project_stack(frame)
+    if not stack:
+        return
+    ev = {
+        "seq": next(SEQ),
+        "method": method,
+        "args": [jsonable(a) for a in args],
+        "kwargs": {k: jsonable(v) for k, v in kwargs.items()},
+        "frames": stack,
+    }
+    EVENTS.setdefault(id(mob), (mob, []))[1].append(ev)
+
+
+LAYOUT_METHODS = [
+    "shift", "move_to", "next_to", "to_edge", "to_corner", "align_to", "arrange",
+    "arrange_in_grid", "scale", "set_width", "set_height", "scale_to_fit_width",
+    "scale_to_fit_height", "stretch_to_fit_width", "stretch_to_fit_height", "set", "put_start_and_end_on",
+    "rotate", "set_x", "set_y", "align_on_border",
+]
+
+
+def _wrap_method(cls, name):
+    orig = getattr(cls, name, None)
+    if orig is None:
+        return
+
+    @functools.wraps(orig)
+    def wrapper(self, *a, **k):
+        try:
+            record_event(self, name, a, k, sys._getframe(1))
+        except Exception:
+            pass
+        return orig(self, *a, **k)
+
+    setattr(cls, name, wrapper)
+
+
+def _all_subclasses(cls):
+    out, stack = [], [cls]
+    while stack:
+        for sub in stack.pop().__subclasses__():
+            if sub not in out:
+                out.append(sub)
+                stack.append(sub)
+    return out
+
+
+for _m in LAYOUT_METHODS:
+    _wrap_method(Mobject, _m)
+# Subclasses that override a layout method (VMobject.rotate / .scale, Line.put_start_and_end_on, Table.scale, ...)
+# would otherwise call the Mobject wrapper from manim's own code, where the deck frame is no longer visible.
+for _cls in _all_subclasses(Mobject):
+    for _m in LAYOUT_METHODS:
+        if _m in _cls.__dict__:
+            _wrap_method(_cls, _m)
+
+_orig_add = Mobject.add
+
+
+def _add(self, *mobjects):
+    for m in mobjects:
+        if isinstance(m, Mobject):
+            PARENTS.setdefault(id(m), (m, []))[1].append((self, next(SEQ)))
+    return _orig_add(self, *mobjects)
+
+
+Mobject.add = _add
+
+# ``x.animate.shift(...)`` builds the call lazily on a copy; record it on x.
+_orig_ab_getattr = _AnimationBuilder.__getattr__
+
+
+def _ab_getattr(self, method_name):
+    fn = _orig_ab_getattr(self, method_name)
+    if method_name not in LAYOUT_METHODS:
+        return fn
+    mob = self.mobject
+
+    def wrapped(*a, **k):
+        try:
+            record_event(mob, method_name, a, k, sys._getframe(1))
+            EVENTS[id(mob)][1][-1]["animated"] = True
+        except Exception:
+            pass
+        return fn(*a, **k)
+
+    return wrapped
+
+
+_AnimationBuilder.__getattr__ = _ab_getattr
+
+
+def _built_by_table(frame):
+    f = frame.f_back
+    for _ in range(4):
+        if f is None:
+            return False
+        if f.f_code.co_filename.replace("\\", "/").endswith("manim/mobject/table.py"):
+            return True
+        f = f.f_back
+    return False
+
+
+def _redrawing(f) -> bool:
+    """Whether deck code at frame `f` runs inside an `always_redraw` updater (not the first build of its mobject)."""
+    up = f.f_back
+    return up is not None and up.f_code.co_name == "<lambda>" \
+        and up.f_code.co_filename.replace("\\", "/").endswith("updaters/mobject_update_utils.py")
+
+
+def _track(kind, cls, value_of, only=None):
+    """Report every construction of cls by deck code; `only(mobject, source_line)` can restrict that further."""
+    orig_init = cls.__init__
+
+    @functools.wraps(orig_init)
+    def init(self, *a, **k):
+        orig_init(self, *a, **k)
+        try:
+            caller = sys._getframe(1)
+            # Only objects constructed directly by deck code are editable.
+            if not in_project(caller.f_code.co_filename):
+                return
+            if caller.f_code.co_name == "<lambda>" and _built_by_table(caller):
+                return            # a table's element_to_mobject: the entry is part of the table
+            if caller.f_code.co_name == "<lambda>" and _redrawing(caller):
+                return            # `always_redraw` rebuilding its mobject: the copy is not an object of the slide
+            if "_sl_id" in self.__dict__:
+                return
+            stack = project_stack(caller)
+            if not stack or any(fr["func"] == "setup" for fr in stack):
+                return
+            linecache.checkcache(caller.f_code.co_filename)       # the deck changes between renders
+            source_line = linecache.getline(caller.f_code.co_filename, caller.f_lineno)
+            if "# manimble background" in source_line:
+                return            # a slide background is part of the backdrop, not an editable object
+            if only is not None and not only(self, source_line):
+                return
+            self._sl_id = len(TRACKED)
+            self._sl_kind = kind
+            self._sl_frames = stack
+            self._sl_value = value_of(self, a, k)
+            self._sl_born = next(SEQ)
+            fs = text_attr(self, "font_size") if kind in ("text", "tex") else None
+            self._sl_font0 = float(fs) if fs is not None else None
+            TRACKED.append(self)
+        except Exception:
+            traceback.print_exc()
+
+    cls.__init__ = init
+
+
+_track("text", Text, lambda s, a, k: str(a[0]) if a else str(k.get("text", s.text)))
+# Paragraph (one positional string per line, alignment=...) is how Manimble writes aligned multi-line text.
+_track("text", Paragraph, lambda s, a, k: "\n".join(str(x) for x in a))
+_track("tex", MathTex, lambda s, a, k: "".join(s.tex_strings))
+def _track_shapes():
+    import inspect
+    import manim.mobject.geometry.arc as arc
+    import manim.mobject.geometry.line as line
+    import manim.mobject.geometry.polygram as poly
+    import manim.mobject.geometry.shape_matchers as sm
+    from manim import Line as L
+    for mod in (arc, line, poly, sm):
+        for _, cls in inspect.getmembers(mod, inspect.isclass):
+            if cls.__module__ != mod.__name__ or "__init__" not in cls.__dict__:
+                continue
+            if cls.__name__ in ("TipableVMobject", "LabeledLine", "LabeledArrow", "LabeledPolygram", "Polygram",
+                                "ArcPolygon", "ArcPolygonFromArcs", "CurvedArrow", "CurvedDoubleArrow"):
+                continue
+            _track("line" if issubclass(cls, L) else "shape", cls, lambda s, a, k: type(s).__name__)
+
+
+def _track_tables():
+    import manim.mobject.table as tb
+    import json as _json
+    for name in ("Table", "MathTable", "MobjectTable", "IntegerTable", "DecimalTable"):
+        cls = getattr(tb, name, None)
+        if cls is None or "__init__" not in cls.__dict__:
+            continue
+
+        def value_of(s, a, k):
+            data = a[0] if a else k.get("table")
+            try:
+                return _json.dumps([[str(c) if not isinstance(c, (int, float)) else c for c in row] for row in data])
+            except Exception:
+                return "[]"
+        _track("table", cls, value_of)
+
+
+_track_shapes()
+_track_tables()
+_track("image", ImageMobject, lambda s, a, k: str(a[0]) if a else str(k.get("filename_or_array", "")))
+# A vector picture (a BioCartoon icon placed as SVG). Text and MathTex are SVGMobjects too: only the class itself counts.
+_track("image", SVGMobject, lambda s, a, k: str(a[0]) if a else str(k.get("file_name", "")),
+       only=lambda s, line: type(s) is SVGMobject)
+# A freehand pen stroke Manimble wrote (`VMobject(...).set_points_smoothly(...)  # manimble pen`): a plain VMobject,
+# tracked only on that marked line so groups and the VMobjects inside Text and shapes stay untouched.
+_track("shape", VMobject, lambda s, a, k: "Pen", only=lambda s, line: type(s) is VMobject and "# manimble pen" in line)
+# Tex (plain LaTeX text) is a MathTex subclass in manim and is tracked as such.
+
+_orig_group_init = Group.__init__
+
+
+@functools.wraps(_orig_group_init)
+def _group_init(self, *a, **k):
+    """A group the user made in the editor (`g = Group(a, b)  # manimble group`): its members select together."""
+    _orig_group_init(self, *a, **k)
+    try:
+        caller = sys._getframe(1)
+        if not in_project(caller.f_code.co_filename):
+            return
+        linecache.checkcache(caller.f_code.co_filename)
+        if "# manimble group" in linecache.getline(caller.f_code.co_filename, caller.f_lineno):
+            GROUPS.append((self, [m for m in a if isinstance(m, Mobject)], project_stack(caller)))
+    except Exception:
+        traceback.print_exc()
+
+
+Group.__init__ = _group_init
+
+# ------------------------------------------------------------ fake Slide
+
+_STATE = {"stops": [], "out": None, "scene": None,
+          "steps": 0, "t0": 0.0, "times": []}     # render progress: steps reached and the time of each
+
+
+def _sl_progress():
+    """Mark a render step (a play/wait reached, a stop captured). The parent maps the step to a fraction with
+    the previous render's timeline; the times become this render's timeline."""
+    _STATE["steps"] += 1
+    _STATE["times"].append(time.perf_counter() - _STATE["t0"])
+    try:
+        _proto.write(json.dumps({"progress": {"step": _STATE["steps"]}}) + "\n")
+    except OSError:
+        pass
+
+
+def _redraw(updater) -> bool:
+    """Whether an updater is `always_redraw`'s, which rebuilds its mobject from the objects it reads."""
+    return getattr(updater, "__qualname__", "").startswith("always_redraw.")
+
+
+def _flip_colors(scene) -> list:
+    """A theme preview with whites and blacks swapped (theme.py): map every neutral colour on screen as Format ▸ Apply
+    Dark Mode to Deck writes it into the source, except the theme's own colours (the deck takes them as they are);
+    [(mobject, attribute, old array)] to put back after the frame is drawn."""
+    from manimble.darkmode import map_rgb
+    keep = _STATE.get("keep") or set()
+    undo = []
+    for m in extract_mobject_family_members(list_update(scene.mobjects, scene.foreground_mobjects)):
+        for attr in ("fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"):
+            arr = getattr(m, attr, None) if isinstance(m, VMobject) else None
+            if arr is None or not len(arr):
+                continue
+            new = np.array(arr, dtype=float)
+            for row in new:
+                if tuple(int(round(v * 255)) for v in row[:3]) not in keep:
+                    row[:3] = map_rgb(*row[:3])
+            undo.append((m, attr, arr))
+            setattr(m, attr, new)
+    return undo
+
+
+class Slide(Scene):
+    """Stand-in for manim_slides.Slide: each next_slide() is a recorded stop."""
+
+    _sl_dirty = False
+    _sl_animated = False      # a play() or wait() has run (what manim-slides counts before its first slide)
+    _sl_anim = None           # where the build's last play() or wait() was called from construct()
+
+    def next_slide(self, *a, **k):
+        if not self._sl_animated and not _STATE["stops"]:
+            # options for the first build (e.g. notes=...) before anything is animated: not a stop, as in
+            # manim-slides, even when setup() or the preamble has already added something (a footer, a page number)
+            return
+        stack = project_stack(sys._getframe(1))
+        self._sl_stop(stack[-1] if stack else None)
+
+    def start_loop(self, *a, **k):
+        pass
+
+    def end_loop(self, *a, **k):
+        pass
+
+    def play(self, *a, **k):
+        self._sl_dirty = self._sl_animated = True
+        self._sl_note_anim(sys._getframe(1))
+        _sl_progress()
+        if not REAL_PLAY and self._fast_play(a):
+            return None
+        return super().play(*a, **k)
+
+    def _fast_play(self, anims):
+        """Jump straight to the end state of the animations (no begin()/deep copies/interpolation).
+
+        Covered: animations whose end state is "mobject added / removed / replaced", `.animate` and
+        MoveToTarget (the mobject takes its prepared target), Transform (the mobject takes the target's
+        shape), the TransformMatching family (source out, target in) and indications that leave the
+        slide as it was. Anything else (updaters, Homotopy, custom animations ...) goes through the real
+        pipeline, which deep-copies every mobject it animates and is the slow part of a re-render."""
+        flat = []
+
+        def walk(x):
+            if isinstance(x, _AnimationBuilder):
+                x = x.build()              # `m.animate.shift(...)` arrives unbuilt; play() would build it the same way
+            if type(x) in SIMPLE_ANIMS or type(x) in TARGET_ANIMS or type(x) is Transform \
+                    or type(x) in NOOP_ANIMS or isinstance(x, TransformMatchingAbstractBase):
+                flat.append(x)
+            elif isinstance(x, (AnimationGroup, LaggedStart)):
+                for c in x.animations:
+                    walk(c)
+            else:
+                raise _NotSimple
+
+        try:
+            for a in anims:
+                walk(a)
+        except _NotSimple:
+            return False
+        for m in self.mobjects:
+            # `always_redraw` lines only rebuild from the objects they read: the end state is the same either way
+            if not all(_redraw(u) for x in (m, *m.submobjects) for u in x.updaters):
+                return False
+        for a in flat:
+            if a.mobject.updaters:
+                return False
+            if type(a) in TARGET_ANIMS and getattr(a.mobject, "target", None) is None:
+                return False
+        for a in flat:
+            if type(a) in SIMPLE_ANIMS and a.is_introducer():
+                self.add(a.mobject)
+        # what manim's play() adds before animating; the TransformMatching group of pieces is removed again
+        self.add_mobjects_from_animations([a for a in flat if not isinstance(a, TransformMatchingAbstractBase)
+                                           and type(a) not in NOOP_ANIMS])
+        for a in flat:
+            if type(a) in TARGET_ANIMS:
+                # manim's _MethodAnimation.finish(): the methods for their side effects, then the target's geometry
+                for item in getattr(a, "methods", ()):
+                    item.method.__func__(a.mobject, *item.args, **item.kwargs)
+                _become(a.mobject, a.mobject.target)
+            elif type(a) is Transform:
+                target = a.target_mobject
+                # become() aligns both structures; keep the real target untouched like Transform.begin() does
+                _become(a.mobject, target if _same_shape(a.mobject, target) else target.copy())
+                if a.replace_mobject_with_target_in_scene:
+                    self.replace(a.mobject, target)
+            elif isinstance(a, TransformMatchingAbstractBase):
+                self.remove(*a.to_remove)
+                self.add(a.to_add)
+            elif type(a) in NOOP_ANIMS:
+                pass
+            else:
+                if a.is_remover():
+                    self.remove(a.mobject)
+                if getattr(a, "replace_mobject_with_target_in_scene", False):
+                    self.replace(a.mobject, a.target_mobject)
+        self.update_mobjects(0)            # as play() does once the animations finish
+        return True
+
+    def wait(self, *a, **k):
+        self._sl_dirty = self._sl_animated = True          # a wait() counts as an animation for manim-slides
+        self._sl_note_anim(sys._getframe(1))
+        _sl_progress()
+        self.update_mobjects(0)            # as slides_render.py does: see _wait_updated there
+        return super().wait(*a, **k)
+
+    def _sl_note_anim(self, f):
+        """Only play() and wait() draw frames: what is added after the build's last one is not in its clip, so
+        inserts go before it (srcedit.plan_insert)."""
+        stack = project_stack(f)
+        self._sl_anim = stack[-1] if stack else None
+
+    def add(self, *a, **k):
+        self._sl_dirty = True
+        return super().add(*a, **k)
+
+    def remove(self, *a, **k):
+        self._sl_dirty = True
+        return super().remove(*a, **k)
+
+    def tear_down(self):
+        super().tear_down()
+        if self._sl_dirty or not _STATE["stops"]:
+            self._sl_stop()
+
+    def _sl_stop(self, site=None):
+        self._sl_dirty = False
+        self.update_mobjects(0)            # an arrow redrawn from an object moved since the last play() follows it
+        r = self.renderer
+        n = len(_STATE["stops"])
+        out = _STATE["out"]
+        fw, fh = config.frame_width, config.frame_height
+        cam = r.camera
+        # full, exact frame
+        undo = _flip_colors(self) if _STATE.get("flip") else []
+        r.update_frame(self, ignore_skipping=True)
+        full = np.array(r.get_frame())
+        for m, attr, arr in undo:
+            setattr(m, attr, arr)
+        Image.fromarray(full[..., :3].astype("uint8")).save(os.path.join(out, f"stop{n}.png"))
+        pw, ph = full.shape[1], full.shape[0]
+        members = extract_mobject_family_members(
+            list_update(self.mobjects, self.foreground_mobjects), use_z_index=True, only_those_with_points=True)
+        order = {id(m): i for i, m in enumerate(members)}
+        # the order things were added in, which breaks ties between equal z_index values
+        added = {id(m): i for i, m in enumerate(extract_mobject_family_members(
+            list_update(self.mobjects, self.foreground_mobjects), use_z_index=False, only_those_with_points=True))}
+        top = set()
+        stack = list(self.mobjects)
+        while stack:
+            m = stack.pop()
+            if id(m) in top:
+                continue
+            top.add(id(m))
+            stack.extend(m.submobjects)
+        vis, sprites, taken, lines, cells, glyphs = [], [], set(), {}, {}, {}
+
+        def box(mob):
+            return [(mob.get_left()[0] + fw / 2) / fw * pw, (fh / 2 - mob.get_top()[1]) / fh * ph,
+                    (mob.get_right()[0] + fw / 2) / fw * pw, (fh / 2 - mob.get_bottom()[1]) / fh * ph]
+        sites = {}
+        first = {}
+        for m in TRACKED:
+            k = (m._sl_frames[-1]["file"], tuple(m._sl_frames[-1]["pos"]))
+            sites[k] = sites.get(k, 0) + 1
+            first.setdefault(k, m._sl_id)
+        # tracked objects living inside another tracked one (a table's row labels) are drawn by their parent
+        inner = {}
+        for m in TRACKED:
+            if id(m) in top and m.submobjects:
+                inner[id(m)] = {id(x) for x in m.get_family() if x is not m}
+        nested_ids = set()
+        for m in TRACKED:
+            if id(m) in top and any(id(m) in d for pid, d in inner.items() if pid != id(m)):
+                nested_ids.add(id(m))
+        bulk = {}
+        for m in TRACKED:
+            if id(m) not in top:
+                continue
+            at = (m._sl_frames[-1]["file"], tuple(m._sl_frames[-1]["pos"]))
+            if m._sl_kind in ("line", "shape", "table") and sites[at] > 12:
+                bulk.setdefault(at, []).append(m)
+                continue          # data-point style bulk objects are not individually editable: one drawing, below
+            try:
+                if m._sl_kind != "image" and max_opacity(m) < 0.03:
+                    continue
+                x0, x1 = m.get_left()[0], m.get_right()[0]
+                y0, y1 = m.get_top()[1], m.get_bottom()[1]
+                if x1 - x0 <= 0 and y0 - y1 <= 0:
+                    continue
+                vis.append([m._sl_id, (x0 + fw / 2) / fw * pw, (fh / 2 - y0) / fh * ph,
+                            (x1 + fw / 2) / fw * pw, (fh / 2 - y1) / fh * ph])
+                if m._sl_kind == "line":
+                    a, b = m.get_start(), m.get_end()
+                    lines[str(m._sl_id)] = [(a[0] + fw / 2) / fw * pw, (fh / 2 - a[1]) / fh * ph,
+                                            (b[0] + fw / 2) / fw * pw, (fh / 2 - b[1]) / fh * ph,
+                                            float(m.get_stroke_width()) * 0.01 * pw / fw]
+                if m._sl_kind == "text":
+                    g = glyph_boxes(m, box)
+                    if g:
+                        glyphs[str(m._sl_id)] = g
+                if m._sl_kind == "table" and getattr(m, "row_labels", None) is None and getattr(m, "col_labels", None) is None:
+                    try:          # each data cell's area and its entry's ink, for typing into a cell on the slide
+                        cells[str(m._sl_id)] = [[i, j] + box(m.get_cell((i + 1, j + 1))) + box(e)
+                                                for i, row in enumerate(m.mob_table) for j, e in enumerate(row)]
+                    except Exception:
+                        traceback.print_exc()
+                if id(m) in nested_ids:
+                    continue                      # selectable, but rendered as part of its parent's sprite
+                fam = extract_mobject_family_members([m], use_z_index=True, only_those_with_points=True)
+                for f in fam:
+                    taken.add(id(f))
+                z = min((order.get(id(f), 10 ** 9) for f in fam), default=10 ** 9)
+                sp = raster(cam, fam, out)
+                if sp:
+                    sp.update(oid=m._sl_id, z=z, zi=float(m.z_index),
+                              seq=min((added.get(id(f), 10 ** 9) for f in fam), default=10 ** 9))
+                    sprites.append(sp)
+            except Exception:
+                traceback.print_exc()
+        # What one line of code makes in bulk (a row of glyphs, a cloud of dots) selects and moves as one drawing
+        for at, ms in bulk.items():
+            try:
+                ms = [m for m in ms if max_opacity(m) >= 0.03]
+                if not ms:
+                    continue
+                uid = DRAWING_BASE + first[at]
+                x0, x1 = min(m.get_left()[0] for m in ms), max(m.get_right()[0] for m in ms)
+                y0, y1 = max(m.get_top()[1] for m in ms), min(m.get_bottom()[1] for m in ms)
+                vis.append([uid, (x0 + fw / 2) / fw * pw, (fh / 2 - y0) / fh * ph,
+                            (x1 + fw / 2) / fw * pw, (fh / 2 - y1) / fh * ph])
+                DRAWINGS[uid] = {"frames": ms[0]._sl_frames, "count": sites[at]}
+                fam = [f for f in extract_mobject_family_members(ms, use_z_index=True, only_those_with_points=True)
+                       if id(f) not in taken]
+                for f in fam:
+                    taken.add(id(f))
+                sp = raster(cam, fam, out)
+                if sp:
+                    sp.update(oid=uid, z=min((order.get(id(f), 10 ** 9) for f in fam), default=10 ** 9),
+                              zi=max(float(m.z_index) for m in ms),
+                              seq=min((added.get(id(f), 10 ** 9) for f in fam), default=10 ** 9))
+                    sprites.append(sp)
+            except Exception:
+                traceback.print_exc()
+        sprites.sort(key=lambda s: s["z"])
+        cam.reset()
+        cam.capture_mobjects([m for m in members if id(m) not in taken], include_submobjects=False)
+        Image.fromarray(np.array(cam.pixel_array)[..., :3].astype("uint8")).save(os.path.join(out, f"bg{n}.png"))
+        _STATE["stops"].append({"png": f"stop{n}.png", "bg": f"bg{n}.png", "visible": vis, "sprites": sprites, "lines": lines,
+                                "cells": cells, "glyphs": glyphs,
+                                "site": site, "anim": self._sl_anim})
+        self._sl_anim = None
+        _sl_progress()
+
+
+def glyph_boxes(m, box):
+    """The ink box (frame px, rounded) of each non-space character of a tracked Text/Paragraph's value, for
+    highlighting search matches; a ligature's glyph is split evenly among its characters. None when the glyphs
+    cannot be matched up with the characters."""
+    chars = [c for c in m._sl_value if not c.isspace()]
+    leaves = m.family_members_with_points()
+    if not chars or len(leaves) > len(chars):
+        return None
+    runs = None
+    # most fonts join only fi and fl; one that also joins ff, ffi and ffl leaves characters over after that
+    for ligatures in (("fi", "fl"), ("ffi", "ffl", "ff", "fi", "fl")):
+        spare = len(chars) - len(leaves)             # characters drawn as part of a ligature
+        runs, i = [], 0
+        while i < len(chars):
+            n = 1
+            if spare:
+                word = "".join(chars[i:i + 3])
+                lig = next((x for x in ligatures if word.startswith(x) and len(x) - 1 <= spare), None)
+                if lig:
+                    n = len(lig); spare -= n - 1
+            runs.append(n); i += n
+        if not spare:
+            break
+    if spare or len(runs) != len(leaves):
+        return None
+    out = []
+    for leaf, n in zip(leaves, runs):
+        x0, y0, x1, y1 = box(leaf)
+        w = (x1 - x0) / n
+        out += [[round(x0 + k * w, 1), round(y0, 1), round(x0 + (k + 1) * w, 1), round(y1, 1)] for k in range(n)]
+    return out
+
+
+def _offslide_camera(members, pw, ph):
+    """A camera on the frame's pixel grid that covers the members' whole extent (up to one frame past each
+    edge), or None when they fit on the slide. Returns (camera, x offset, y offset) in frame px."""
+    pts = [f.points for f in members if len(f.points)]
+    if not pts:
+        return None
+    pts = np.vstack(pts)
+    fw, fh = config.frame_width, config.frame_height
+    sx, sy = pw / fw, ph / fh
+    margin = 0.15 * sx                                   # room for strokes and glyph overhang
+    X0 = max(-pw, math.floor((pts[:, 0].min() + fw / 2) * sx - margin))
+    X1 = min(2 * pw, math.ceil((pts[:, 0].max() + fw / 2) * sx + margin))
+    Y0 = max(-ph, math.floor((fh / 2 - pts[:, 1].max()) * sy - margin))
+    Y1 = min(2 * ph, math.ceil((fh / 2 - pts[:, 1].min()) * sy + margin))
+    if X0 >= 0 and Y0 >= 0 and X1 <= pw and Y1 <= ph or X1 <= X0 or Y1 <= Y0:
+        return None
+    w, h = X1 - X0, Y1 - Y0
+    cam = Camera(pixel_width=w, pixel_height=h, frame_width=w / sx, frame_height=h / sy,
+                 frame_center=np.array([((X0 + X1) / 2 - pw / 2) / sx, (ph / 2 - (Y0 + Y1) / 2) / sy, 0]))
+    cam.max_allowable_norm = 10 * max(fw, fh)            # manim squashes points past one frame width otherwise
+    return cam, X0, Y0
+
+
+def raster(cam, members, out):
+    """Render mobjects alone on a transparent canvas; save a cropped straight-alpha PNG. Parts past the
+    slide's edges are kept (the sprite's x/y may be negative) so the editor can show them off the slide."""
+    pw, ph = cam.pixel_width, cam.pixel_height
+    cam.reset()
+    cam.pixel_array[:] = 0
+    cam.capture_mobjects(members, include_submobjects=False)
+    arr = np.array(cam.pixel_array)
+    a = arr[..., 3]
+    cols, rows = np.flatnonzero(a.any(axis=0)), np.flatnonzero(a.any(axis=1))
+    ox = oy = 0
+    if len(cols) == 0 or cols[0] == 0 or rows[0] == 0 or cols[-1] == pw - 1 or rows[-1] == ph - 1:
+        wide = _offslide_camera(members, pw, ph)
+        if wide:
+            cam, ox, oy = wide
+            cam.reset()
+            cam.pixel_array[:] = 0
+            cam.capture_mobjects(members, include_submobjects=False)
+            arr = np.array(cam.pixel_array)
+            a = arr[..., 3]
+            cols, rows = np.flatnonzero(a.any(axis=0)), np.flatnonzero(a.any(axis=1))
+    if len(cols) == 0:
+        return None
+    x0, x1, y0, y1 = cols[0], cols[-1] + 1, rows[0], rows[-1] + 1
+    crop = arr[y0:y1, x0:x1].astype("float32")
+    al = crop[..., 3:4]
+    rgb = np.where(al > 0, crop[..., :3] * 255.0 / np.maximum(al, 1), 0)   # un-premultiply
+    img = np.concatenate([np.clip(rgb, 0, 255), al], axis=2).astype("uint8")
+    data = img.tobytes()
+    name = "sp_" + hashlib.md5(data + bytes([x1 - x0 & 255, y1 - y0 & 255])).hexdigest()[:16] + ".png"
+    path = os.path.join(out, name)
+    if not os.path.exists(path):
+        Image.fromarray(img, "RGBA").save(path, compress_level=1)
+    return {"file": name, "x": int(x0 + ox), "y": int(y0 + oy), "w": int(x1 - x0), "h": int(y1 - y0)}
+
+
+class _NotSimple(Exception):
+    pass
+
+
+REAL_PLAY = bool(os.environ.get("MANIMBLE_REAL_PLAY"))
+SIMPLE_ANIMS = {FadeIn, FadeOut, Create, Uncreate, Write, Unwrite, DrawBorderThenFill, GrowFromCenter,
+                GrowFromPoint, GrowFromEdge, GrowArrow, SpinInFromNothing, ReplacementTransform}
+TARGET_ANIMS = {_MethodAnimation, MoveToTarget}        # the mobject ends up as its prepared .target
+NOOP_ANIMS = {Indicate, Flash, Circumscribe, Wiggle, FocusOn}   # there-and-back / self-removing effects
+
+
+def _same_shape(a, b) -> bool:
+    """True when become() can copy b's points into a without inserting submobjects into either."""
+    if a.has_points() != b.has_points() or len(a.submobjects) != len(b.submobjects):
+        return False
+    return all(_same_shape(x, y) for x, y in zip(a.submobjects, b.submobjects))
+
+
+def _become(m, target):
+    """m.become(target) for the end of an animation. become() blends the colour of every member, which a Group or a
+    ValueTracker cannot (manim raises); they have no colour of their own, and manim's animations leave it alone too."""
+    m.align_data(target, skip_point_alignment=True)
+    for a, b in zip(m.get_family(), target.get_family(), strict=True):
+        a.points = np.array(b.points)
+        if type(a).interpolate_color is not Mobject.interpolate_color:
+            a.interpolate_color(a, b, 1)
+    return m
+
+fake = types.ModuleType("manim_slides")
+fake.Slide = Slide
+sys.modules["manim_slides"] = fake
+
+
+# ------------------------------------------------------------------ runner
+
+_realpaths: dict = {}
+
+
+def purge_project_modules():
+    for name, mod in list(sys.modules.items()):
+        fn = getattr(mod, "__file__", None)
+        if not fn:
+            continue
+        real = _realpaths.get(fn)        # resolving ~1200 installed modules each render costs 60 ms
+        if real is None:
+            real = _realpaths[fn] = os.path.realpath(fn)
+        if in_project(real):
+            del sys.modules[name]
+    importlib.invalidate_caches()
+
+
+def hexcolor(m):
+    """The colour of an object: for a text, the colour most of its glyphs have (some may be coloured on their own)."""
+    try:
+        # a text highlight, or a line Manimble drew under or through it, is not the text's colour
+        deco = {id(x) for d in m.submobjects if getattr(d, "manimble_decoration", False) for x in d.get_family()}
+        seen = []
+        for sub in m.get_family():
+            if isinstance(sub, BackgroundRectangle) or id(sub) in deco or not sub.has_points():
+                continue
+            seen.append(sub.get_color().to_hex())
+            if getattr(m, "_sl_kind", None) not in ("text", "tex"):
+                break
+        return max(dict.fromkeys(seen), key=seen.count) if seen else None
+    except Exception:
+        pass
+    return None
+
+
+def picture_path(m):
+    """The file a picture shows: an ImageMobject's path, or the SVG of an SVGMobject (absolute)."""
+    p = getattr(m, "path", None)
+    if p is None and isinstance(m, SVGMobject):
+        try:
+            p = m.get_file_path()
+        except Exception:
+            p = None
+    return os.path.abspath(str(p)) if p else None
+
+
+def text_attr(m, name):
+    """font_size / font / weight / slant of a Text, or of the Text inside a Paragraph."""
+    v = getattr(m, name, None)
+    if v is None and getattr(m, "lines_text", None) is not None:
+        v = getattr(m.lines_text, name, None)
+    return v
+
+
+def char_styles(m):
+    """Which characters of a Text (or a Paragraph's lines joined by newlines) are italic and bold, and their own
+    colours: {"italic": [[start, end], ...], "bold": [...], "colors": [[start, end, "#RRGGBB"], ...]}, from its
+    slant / weight, then its t2s / t2w / t2c ranges and words on top, as manim applies them."""
+    t = m if hasattr(m, "t2s") else getattr(m, "lines_text", None)
+    try:
+        text = t.original_text.replace("\t", " " * t.tab_width)      # what t2* ranges index, as in Text._text2svg
+        n = len(text)
+        italic = [str(t.slant).upper() in ("ITALIC", "OBLIQUE")] * n
+        bold = [str(t.weight).upper() in ("BOLD", "SEMIBOLD", "ULTRABOLD", "HEAVY", "ULTRAHEAVY")] * n
+        colors = [None] * n
+        for flags, t2x, test in ((italic, t.t2s, lambda v: str(v).upper() in ("ITALIC", "OBLIQUE")),
+                                 (bold, t.t2w, lambda v: str(v).upper() in ("BOLD", "SEMIBOLD", "ULTRABOLD", "HEAVY", "ULTRAHEAVY")),
+                                 (colors, t.t2c, lambda v: ManimColor(v).to_hex().upper()[:7])):
+            for word, v in (t2x or {}).items():
+                for a, b in t._find_indexes(word, text):
+                    for k in range(max(a, 0), min(b, n)):
+                        flags[k] = test(v)
+    except Exception:
+        return {}
+
+    def runs(vals, with_value=False):
+        out, k = [], 0
+        while k < n:
+            e = k
+            while e < n and vals[e] == vals[k]:
+                e += 1
+            if vals[k]:
+                out.append([k, e, vals[k]] if with_value else [k, e])
+            k = e
+        return out
+    return {"italic": runs(italic), "bold": runs(bold), "colors": runs(colors, True)}
+
+
+def dims_px(m):
+    """Manim's width and height of the object (all points, like stretch_to_fit_*), in frame pixels."""
+    try:
+        fw, fh = config.frame_width, config.frame_height
+        return [float(m.width) / fw * config.pixel_width, float(m.height) / fh * config.pixel_height]
+    except Exception:
+        return None
+
+
+def rotation_deg(m) -> float:
+    """Total angle of the object's own rotate() calls, in degrees (0-360)."""
+    total = 0.0
+    for e in EVENTS.get(id(m), (None, []))[1]:
+        if e["method"] != "rotate":
+            continue
+        a = e["args"][0] if e["args"] else e["kwargs"].get("angle")
+        if isinstance(a, (int, float)) and not isinstance(a, bool):
+            total += float(a)
+    return round(math.degrees(total) % 360.0, 2)
+
+
+def shape_color(m):
+    try:
+        return m.get_stroke_color().to_hex() if m.get_stroke_opacity() > 0 else m.get_fill_color().to_hex()
+    except Exception:
+        return None
+
+
+def max_opacity(m):
+    best = 0.0
+    try:
+        for sub in m.get_family():
+            if sub.has_points():
+                best = max(best, float(sub.get_fill_opacity()), float(sub.get_stroke_opacity()))
+    except Exception:
+        return 1.0
+    return best
+
+
+def collect_events(m, seen=None):
+    """Own events plus events of enclosing groups made after m joined them."""
+    out = [dict(e, own=True) for e in EVENTS.get(id(m), (None, []))[1]]
+    stack = [(m, 0)]
+    visited = {id(m)}
+    while stack:
+        cur, since = stack.pop()
+        for parent, joined in PARENTS.get(id(cur), (None, []))[1]:
+            if id(parent) in visited:
+                continue
+            visited.add(id(parent))
+            for e in EVENTS.get(id(parent), (None, []))[1]:
+                if e["seq"] > max(joined, since):
+                    out.append(dict(e, own=False))
+            stack.append((parent, max(joined, since)))
+    out.sort(key=lambda e: e["seq"])
+    return out
+
+
+def render(req):
+    DEPENDENCIES.clear()
+    out = req["out"]
+    os.makedirs(out, exist_ok=True)
+    for f in os.listdir(out):
+        if f.endswith(".png") or f.endswith(".jpg"):
+            os.remove(os.path.join(out, f))
+    TRACKED.clear()
+    EVENTS.clear()
+    PARENTS.clear()
+    GROUPS.clear()
+    DRAWINGS.clear()
+    # the code as it is before it is read: an edit landing during the render leaves the record stale (core.fresh_record),
+    # where hashing afterwards would pass off this render's positions as the edited file's
+    files = {}
+    for name in os.listdir(DECK):
+        if name.endswith(".py"):
+            with open(os.path.join(DECK, name), "rb") as fh:
+                files[name] = hashlib.sha1(fh.read()).hexdigest()
+    _STATE.update(stops=[], out=out, scene=req["scene"], files=files)
+    purge_project_modules()
+    mod = importlib.import_module(req["module"])
+    cls = getattr(mod, req["scene"])
+    # a theme preview (theme.py): the theme's constants in every deck module that has them (the slide's own module
+    # alone for a theme on one slide, which shadows them in its construct()), and its background
+    for key, value in (req.get("constants") or {}).items():
+        for m in [mod] if req.get("slide_only") else list(sys.modules.values()):
+            fn = getattr(m, "__file__", None)
+            if fn and in_project(os.path.realpath(fn)) and hasattr(m, key):
+                setattr(m, key, value)
+    _STATE["flip"] = bool(req.get("flip"))
+    _STATE["keep"] = {tuple(int(v[i:i + 2], 16) for i in (1, 3, 5)) for v in (req.get("constants") or {}).values()
+                      if isinstance(v, str) and len(v) == 7 and v.startswith("#")}
+    old_bg = config.background_color
+    if req.get("background"):
+        config.background_color = req["background"]
+    try:
+        for attempt in (0, 1):
+            TRACKED.clear(); EVENTS.clear(); PARENTS.clear(); GROUPS.clear(); DRAWINGS.clear()
+            _STATE.update(stops=[], steps=0, t0=time.perf_counter(), times=[])
+            scene = cls(skip_animations=True)
+            if req.get("force_background"):
+                # the slide's own `self.camera.background_color = ...` is what the theme replaces: ignore it
+                cam, bg = scene.camera, req["background"]
+                cam.__class__ = type("ThemedCamera", (type(cam),), {"background_color": property(
+                    lambda s: ManimColor(bg), lambda s, v: None)})
+                cam.init_background()
+            try:
+                scene.render()
+                break
+            except FileNotFoundError:
+                # two worker processes share manim's media cache; a half-written file resolves on retry
+                if attempt:
+                    raise
+    finally:
+        config.background_color = old_bg
+    objects = {}
+    for m in TRACKED:
+        objects[m._sl_id] = {
+            "kind": m._sl_kind,
+            "value": m._sl_value,
+            "font_size": text_attr(m, "font_size") if m._sl_kind in ("text", "tex") else None,
+            "font0": getattr(m, "_sl_font0", None),
+            "font": text_attr(m, "font") if m._sl_kind == "text" else None,
+            "weight": text_attr(m, "weight") if m._sl_kind == "text" else None,
+            "slant": text_attr(m, "slant") if m._sl_kind == "text" else None,
+            **(char_styles(m) if m._sl_kind == "text" else {}),
+            "color": (hexcolor(m) if m._sl_kind in ("text", "tex") else shape_color(m)) if m._sl_kind != "image" else None,
+            "path": picture_path(m) if m._sl_kind == "image" else None,
+            "rotation": rotation_deg(m),
+            "dims": dims_px(m),
+            "frames": m._sl_frames,
+            "events": collect_events(m),
+        }
+    for uid, d in DRAWINGS.items():
+        objects[uid] = {"kind": "drawing", "value": f"{d['count']} shapes", "font_size": None, "font0": None, "font": None,
+                        "weight": None, "slant": None, "color": None, "path": None, "rotation": None, "dims": None,
+                        "frames": d["frames"], "events": []}
+    for gi, (_, members, frames) in enumerate(GROUPS):
+        for m in members:
+            if "_sl_id" in m.__dict__ and m._sl_id < len(TRACKED) and TRACKED[m._sl_id] is m:
+                objects[m._sl_id]["group"] = {"id": gi, "frames": frames}
+    files = _STATE["files"]
+    last = _STATE["stops"][-1]["png"] if _STATE["stops"] else None
+    if last:
+        im = Image.open(os.path.join(out, last)).convert("RGB")
+        im.thumbnail((360, 203))
+        im.save(os.path.join(out, "thumb.jpg"), quality=82)
+    total = time.perf_counter() - _STATE["t0"]
+    return {
+        "stops": _STATE["stops"],
+        "objects": objects,
+        "files": files,
+        "dependencies": sorted(DEPENDENCIES),
+        # how long the render took and when each step was reached, as a fraction of that: the next render's progress bar
+        "duration": round(total, 3),
+        "timeline": [round(t / total, 4) for t in _STATE["times"]] if total > 0 else [],
+        "size": [config.pixel_width, config.pixel_height],
+        "frame": [config.frame_width, config.frame_height],
+    }
+
+
+def sprite(req):
+    """Rasterise one Text/MathTex for instant canvas preview (centered on frame centre)."""
+    from manim import Text as T, MathTex as M
+    out = req["out"]
+    os.makedirs(out, exist_ok=True)
+    color = req.get("color") or "#FFFFFF"
+    if req["kind"] == "code":
+        import manim
+        m = eval(req["code"], dict(vars(manim)))
+    elif req["kind"] == "text":
+        kw = {"font_size": req["font_size"], "color": color}
+        if req.get("font"):
+            kw["font"] = req["font"]
+        if req.get("weight"):
+            kw["weight"] = req["weight"]
+        if req.get("slant"):
+            kw["slant"] = req["slant"]
+        styles = req.get("styles") or {}         # formatting of part of it: these ranges, the rest plain
+        if "italic" in styles:
+            kw["slant"] = "NORMAL"
+            kw["t2s"] = {f"[{a}:{b}]": "ITALIC" for a, b, *_ in styles["italic"]}
+        if "bold" in styles:
+            kw["weight"] = "NORMAL"
+            kw["t2w"] = {f"[{a}:{b}]": "BOLD" for a, b, *_ in styles["bold"]}
+        if "color" in styles:
+            kw["t2c"] = {f"[{a}:{b}]": c for a, b, c in styles["color"]}
+        m = T(req["value"], **kw)
+    else:
+        m = M(req["value"], font_size=req["font_size"], color=color)
+    if req["kind"] != "code":
+        m.move_to(ORIGIN)
+    cam = Camera()
+    fam = extract_mobject_family_members([m], use_z_index=True, only_those_with_points=True)
+    sp = raster(cam, fam, out)
+    if sp is None:
+        return {"error": "empty"}
+    pw, ph = config.pixel_width, config.pixel_height
+    # offset of the sprite's centre from the frame centre, in px
+    sp["cx"] = sp["x"] + sp["w"] / 2 - pw / 2
+    sp["cy"] = sp["y"] + sp["h"] / 2 - ph / 2
+    sp["path"] = os.path.join(out, sp["file"])
+    return sp
+
+
+def latex(req):
+    from manim.utils.tex_file_writing import tex_to_svg_file
+    path = tex_to_svg_file(req["tex"], environment="align*")
+    with open(path, encoding="utf-8") as fh:
+        return {"svg": fh.read()}
+
+
+def describe_error(exc) -> str:
+    """Error text for the UI; for LaTeX failures, the actual TeX complaint."""
+    import re
+    msg = str(exc) or exc.__class__.__name__
+    m = re.search(r"log file: (\S+\.log)", msg)
+    if m and os.path.exists(m.group(1)):
+        try:
+            with open(m.group(1), encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().split("\n")
+            for i, ln in enumerate(lines):
+                if ln.startswith("!"):
+                    detail = "\n".join(l for l in lines[i:i + 4] if l.strip())
+                    return "LaTeX error: " + detail
+        except OSError:
+            pass
+    # where in the deck's own code did it fail?
+    try:
+        import traceback as tb
+        frames = [f for f in tb.extract_tb(exc.__traceback__) if in_project(os.path.realpath(f.filename))]
+        if frames:
+            f = frames[-1]
+            msg += f"  (at {os.path.basename(f.filename)}:{f.lineno}: {(f.line or '').strip()})"
+    except Exception:
+        pass
+    return msg
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        try:
+            if req["cmd"] == "render":
+                res = render(req)
+            elif req["cmd"] == "sprite":
+                res = sprite(req)
+            elif req["cmd"] == "latex":
+                res = latex(req)
+            elif req["cmd"] == "svg_icon":
+                from manimble import svg_icon
+                res = svg_icon.prepare(req)
+            elif req["cmd"] == "colors":
+                # manim's named colours (WHITE, BLUE_C, ORANGE, ...) as #RRGGBB
+                import manim.utils.color as mc
+                res = {"colors": {k: v.to_hex().upper()[:7] for k, v in vars(mc).items()
+                                  if k.isupper() and isinstance(v, mc.ManimColor)}}
+            elif req["cmd"] == "ping":
+                res = {"ok": True}
+            else:
+                res = {"error": "unknown command"}
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            tb = traceback.format_exc()
+            sys.stderr.write(tb)
+            msg = describe_error(exc)
+            res = {"error": msg[-1800:], "trace": tb[-3000:], "dependencies": sorted(DEPENDENCIES)}
+        _proto.write(json.dumps(res) + "\n")
+
+
+if __name__ == "__main__":
+    main()

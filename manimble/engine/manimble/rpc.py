@@ -1,0 +1,195 @@
+"""JSON-lines RPC over stdin/stdout, used by the native Manimble app.
+
+Request : {"id": 1, "cmd": "scene", ...args}
+Response: {"id": 1, "result": {...}}  or  {"id": 1, "error": "..."}
+Event   : {"event": "rendered", "name": "Intro"}        (pushed, no id)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import threading
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+
+from . import find, theme
+from .core import Cancelled, Manimble
+
+_out = os.fdopen(os.dup(1), "w", buffering=1, encoding="utf-8")
+sys.stdout = sys.stderr
+_wlock = threading.Lock()
+
+
+def send(obj):
+    line = json.dumps(obj)
+    with _wlock:
+        _out.write(line + "\n")
+
+
+def main():
+    python = os.environ.get("MANIMBLE_PYTHON") or sys.executable
+    app = {"s": None}
+
+    def need():
+        if app["s"] is None:
+            raise RuntimeError("no deck open")
+        return app["s"]
+
+    def open_deck(a):
+        old = app["s"]
+        if old:
+            old.close()
+        s = Manimble(a["deck"], python, a.get("cache"))
+        s.on_event = send
+        app["s"] = s
+        return {"ok": True}
+
+    def present(a):
+        return need().present(a)
+
+    cancel_import = threading.Event()          # an import runs before a deck is open: cancelled here
+
+    def cancel(a):
+        """The busy pill's X: stop the import, build, export or edit the app is waiting on."""
+        cancel_import.set()
+        s = app["s"]
+        return s.cancel() if s else {"ok": True, "killed": False}
+
+    def masked(payload, include):
+        """Keep only the requested top-level fields; identity fields always stay."""
+        if not include:
+            return payload
+        keep = set(include) | {"name", "status"}
+        return {key: value for key, value in payload.items() if key in keep}
+
+    handlers = {
+        "open": open_deck,
+        "state": lambda a: need().api_state(a.get("current")),
+        "dependency_report": lambda a: need().dependency_report(),
+        "scene": lambda a: masked(need().api_scene(a["name"]), a.get("include")),
+        "source": lambda a: need().api_source_text(a["scene"]),
+        "edit": lambda a: need().edit(a),
+        "resolve_oids": lambda a: need().resolve_oids(a),
+        "settle": lambda a: (need()._settle(), {"ok": True})[1],
+        "clear_history": lambda a: need().clear_history(),
+        "edit_source": lambda a: need().edit_source(a),
+        "undo": lambda a: need().undo(),
+        "redo": lambda a: need().redo_(),
+        "undo_mark": lambda a: need().undo_mark(),
+        "undo_merge": lambda a: need().undo_merge(a),
+        "sprite": lambda a: need().sprite(a),
+        "present": present,
+        "animation_preview": lambda a: need().animation_preview(a),
+        "export": lambda a: need().export(a),
+        "insert": lambda a: need().insert(a),
+        "insert_sprite": lambda a: need().insert_sprite(a),
+        "copy": lambda a: need().copy_objects(a),
+        "svg_icon": lambda a: need().svg_icon(a),
+        "pages": lambda a: need().pages(a),
+        "slide": lambda a: need().slide_op(a),
+        "deck_pages": lambda a: need().deck_pages(a),
+        "background": lambda a: need().background(a),
+        "page_numbers": lambda a: need().page_numbers(a),
+        "notes": lambda a: need().notes(a),
+        "alt_text": lambda a: need().alt_text(a),
+        "placeholder": lambda a: need().placeholder(a),
+        "insert_many": lambda a: need().insert_many(a),
+        "delete_build": lambda a: need().delete_build(a),
+        "new_build": lambda a: need().new_build(a),
+        "export_python": lambda a: need().export_python(a),
+        "export_movie": lambda a: need().export_movie(a),
+        "darkmode": lambda a: need().dark_mode(a),
+        "find": lambda a: find.find(need(), a),
+        "replace": lambda a: find.replace(need(), a),
+        "theme": lambda a: theme.apply(need(), a),
+        "cancel": cancel,
+    }
+    def import_job(a):
+        from . import importer
+
+        def go():
+            cancel_import.clear()
+
+            def prog(i, n, what):
+                if cancel_import.is_set():
+                    raise Cancelled("cancelled")
+                send({"event": "import", "phase": "building", "done": i, "total": n, "scene": what})
+            try:
+                if a["src"].lower().endswith((".tex", ".ltx")):
+                    from .beamer_import import import_beamer
+                    r = import_beamer(a["src"], a["dest"], prog)
+                else:
+                    r = importer.import_presentation(a["src"], a["dest"], prog)
+            except Cancelled:
+                send({"event": "import", "phase": "cancelled"})
+                return
+            except Exception as exc:                          # noqa: BLE001
+                r = {"ok": False, "error": str(exc)}
+            send({"event": "import", "phase": "done" if r.get("ok") else "error", **{k: v for k, v in r.items() if k != "ok"}})
+        threading.Thread(target=go, daemon=True).start()
+        return {"ok": True}
+
+    handlers["import"] = import_job
+
+    # LaTeX packages a Beamer import needs: installed only when the user says so in the app
+    def latex_install(a):
+        from . import latex_packages
+
+        def prog(i, n, what):
+            send({"event": "latex_install", "done": i, "total": n, "step": what})
+        return latex_packages.install(a["files"], prog)
+
+    def deck_assets():
+        from pathlib import Path
+        return Path(need().deck).parent / "assets"
+
+    def latex_status(a):
+        """The open deck's LaTeX packages still missing and its pictures still placeholders."""
+        from . import latex_packages
+        f = deck_assets() / latex_packages.MANIFEST
+        if not f.is_file():
+            return {"missing": [], "placeholders": 0}
+        man = json.loads(f.read_text(encoding="utf-8"))
+        return {"missing": latex_packages.absent(man.get("missing", [])),
+                "placeholders": sum(1 for p in man.get("pictures", []) if not p.get("ok")),
+                "source": os.path.basename(man.get("source") or "")}
+
+    def latex_retypeset(a):
+        from .beamer_import import retypeset_pictures
+        return retypeset_pictures(deck_assets())
+
+    def latex_missing(a):
+        from . import latex_packages
+        return latex_packages.missing_in(a["src"])
+
+    handlers["latex_missing"] = latex_missing
+    handlers["latex_install"] = latex_install
+    handlers["latex_status"] = latex_status
+    handlers["latex_retypeset"] = latex_retypeset
+    pool = ThreadPoolExecutor(max_workers=8)
+
+    def run(req):
+        try:
+            res = handlers[req["cmd"]](req)
+            send({"id": req["id"], "result": res})
+        except BaseException as exc:  # noqa: BLE001
+            traceback.print_exc()
+            send({"id": req.get("id"), "error": str(exc)})
+
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            req = json.loads(line)
+            if req.get("cmd") == "open":      # order matters: finish before later requests
+                run(req)
+            else:
+                pool.submit(run, req)
+    if app["s"]:
+        app["s"].close()
+
+
+if __name__ == "__main__":
+    main()

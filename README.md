@@ -10,7 +10,7 @@ repositories; this repository holds the integration layer GeWu actually loads.
 | --- | --- | --- |
 | GeWu Browser | [`browser/`](browser/) | Same repository: [`browser/plugin`](browser/plugin) |
 | Paper | [`paper/`](paper/) | <https://github.com/regulatory-genomics/paper> |
-| Manimble | [`manimble/`](manimble/) | <https://github.com/pachterlab/Manimble> |
+| Manimble | [`manimble/`](manimble/) | [`manimble/engine`](manimble/engine) (snapshot; upstream <https://github.com/pachterlab/Manimble>) |
 | Inkscape | [`inkscape/plugins/gewu`](inkscape/plugins/gewu) | <https://gitlab.com/inkscape/inkscape> (application); adapter is here |
 
 Machine-readable source metadata is in [`sources.json`](sources.json). A
@@ -21,10 +21,13 @@ package and set the fallback links to that commit:
 application-source=<application source URL at the exact commit>
 plugin-source=https://github.com/regulatory-genomics/gewu-plugin/tree/<commit>/<plugin path>
 runtime-recipe=https://github.com/regulatory-genomics/gewu-plugin/tree/<commit>/<recipe path>
+installation-guide=https://github.com/regulatory-genomics/gewu-plugin/blob/<commit>/<plugin path>/INSTALL.md
 ```
 
 The exact plugin and recipe paths are listed in `sources.json`. Do not use a
-moving `main` link in a release repair report.
+moving `main` link in a release repair report. Manimble's package embeds the
+engine snapshot under `manimble/engine`; `engine/SOURCE.json` records the
+upstream base and file digests.
 
 ## Runtime recipes
 

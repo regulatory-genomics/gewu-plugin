@@ -17,10 +17,12 @@
       "buildScript": "./paper/package.py"
     },
     "manimble": {
-      "version": "0.2.0",
-      "application": "https://github.com/pachterlab/Manimble",
+      "version": "0.2.1",
+      "upstream": "https://github.com/pachterlab/Manimble",
+      "application": "./manimble/engine",
       "plugin": "./manimble",
       "runtimeRecipe": "./manimble/runtime-plan.json",
+      "installationGuide": "./manimble/INSTALL.md",
       "buildScript": "./manimble/build-release.py"
     },
     "inkscape": {

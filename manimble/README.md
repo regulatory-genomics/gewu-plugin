@@ -40,12 +40,13 @@ as images. TeX slides need the engine's TeX dependencies.
 For a real engine test set `MANIMBLE_ENGINE_PYTHON`, `MANIMBLE_REQUIRE_REAL=1` and
 `PYTHONPATH="$GEWU/sdk/python"`, then run `python3 -m unittest discover -s plugins/gewu/tests`.
 
-### Marketplace runtime repair
+### Marketplace installation and repair
 
-Use the `runtime-plan.json` from the release revision. On Linux, resolve `pycairo`
-and `manimpango` from conda-forge in the isolated prefix before installing the
-pip requirements. This avoids compiling a native extension against the host's
-Cairo headers. Check the external runtime and register it using the versioned
-commands in **Copy repair info for Agent**. For the adapter check, select the
-deck with `--resource workspace:///deck --resource-type manimble.deck`. After
-restarting GeWu, open `deck` and verify that the editor displays a rendered slide.
+See [INSTALL.md](INSTALL.md) for the managed install, external-runtime recovery,
+probe, registration and minimal render checks. In short: use the
+`runtime-plan.json` from the release revision, resolve `pycairo` and
+`manimpango` from conda-forge in the isolated prefix before installing the pip
+requirements, then run the versioned commands from **Copy repair info for
+Agent**. This avoids compiling a native extension against the host's Cairo
+headers. For the adapter check, select the deck with
+`--resource workspace:///deck --resource-type manimble.deck`.

@@ -1,0 +1,139 @@
+{
+  "files": [
+    {
+      "bytes": 1078,
+      "path": "engine/README.md",
+      "sha256": "f2f0a5aca6b103d350953a0525cff6d828610d7ea8f58abbdab7b31db7579a79"
+    },
+    {
+      "bytes": 93,
+      "path": "engine/manimble/__init__.py",
+      "sha256": "7fba32d5c9152e689162c7a3ea847f925b214d2e90f8a68d0779e36493999dfc"
+    },
+    {
+      "bytes": 16907,
+      "path": "engine/manimble/beamer.py",
+      "sha256": "8e980c1e92d581571d5cb99f90d60e7223578bcb0a878d779ad4d42614f2dbbb"
+    },
+    {
+      "bytes": 167521,
+      "path": "engine/manimble/beamer_import.py",
+      "sha256": "12e684bf09b8fb9d727defb3c4daccc9dfa8d9e2768d6e9d2f51fb36d091653d"
+    },
+    {
+      "bytes": 234656,
+      "path": "engine/manimble/core.py",
+      "sha256": "165dace7a2ec298429ab4bee9e7f28ac15f85ff4a1a0c01a80ccda092945bebe"
+    },
+    {
+      "bytes": 6470,
+      "path": "engine/manimble/darkmode.py",
+      "sha256": "5d1f6cbdca414e49c25798dbb69197cf2669a4503837804e59cae924806f6f30"
+    },
+    {
+      "bytes": 8243,
+      "path": "engine/manimble/export.py",
+      "sha256": "1d560d4685b64798a165892fd974531e2305a6b9eeefab412a197c05d5d3f758"
+    },
+    {
+      "bytes": 11454,
+      "path": "engine/manimble/find.py",
+      "sha256": "e172373cf012bdb19471efbe25be94557fea6e99071c1b7ba3ee6e1d12321686"
+    },
+    {
+      "bytes": 120969,
+      "path": "engine/manimble/importer.py",
+      "sha256": "eda30b2e9e931164c7b13289da4d4287294653fd5f7d05a1f40347df6e24e95c"
+    },
+    {
+      "bytes": 5838,
+      "path": "engine/manimble/latex_packages.py",
+      "sha256": "d9f49298206f0a692cfd22df0f062c5411fcd6c1688b05a580d3dcdea9f2fdd3"
+    },
+    {
+      "bytes": 5842,
+      "path": "engine/manimble/movie.py",
+      "sha256": "dbd44fc5a52dd9d7d50acf1d5e4877a3bc7239c2731afdb1fab2f6c1c8290150"
+    },
+    {
+      "bytes": 7207,
+      "path": "engine/manimble/rpc.py",
+      "sha256": "165369e023c6e9729b6bad64bf1a1a5c72083f139d8c5436e2aac55b49bcbb9a"
+    },
+    {
+      "bytes": 4833,
+      "path": "engine/manimble/slides_render.py",
+      "sha256": "ddba0a18aea0c44799df4eaee3415ebfe569e3c9745e268097ef0b22bb8b2670"
+    },
+    {
+      "bytes": 131431,
+      "path": "engine/manimble/srcedit.py",
+      "sha256": "aeb05d1ccb6e75db8d0f8488e192a7e1738b99bcdcef07c54727f3193a011eef"
+    },
+    {
+      "bytes": 10422,
+      "path": "engine/manimble/svg_icon.py",
+      "sha256": "d0e67fe6c1f9359a944e86b3655f3de9733c1c113cb269c48e5e228f6193e2a8"
+    },
+    {
+      "bytes": 14244,
+      "path": "engine/manimble/theme.py",
+      "sha256": "5c0f260621beb0894393f5f2be7d5062b70b908e86f2aa7ef53966545224c4ae"
+    },
+    {
+      "bytes": 1170,
+      "path": "engine/manimble/themes/README.md",
+      "sha256": "8ec129f41084b4f4bee1b510c0f9d08e75b3692feeee392a02c528bbdf734a4b"
+    },
+    {
+      "bytes": 628,
+      "path": "engine/manimble/themes/chalkboard.py",
+      "sha256": "b4c5b2c4a6d7a40c374f35713075832ea3ef0df53db5ae9bf3aa904cf49ce062"
+    },
+    {
+      "bytes": 614,
+      "path": "engine/manimble/themes/ember.py",
+      "sha256": "6a47bdaceb7ca0d5f139af36b8b4fe8aa83aaad5904ec8885ad9d34e6a924745"
+    },
+    {
+      "bytes": 612,
+      "path": "engine/manimble/themes/midnight.py",
+      "sha256": "195228ab4c88927fb4e0606a027869aa79dbb4d86f3f9a9e4da35058562d8867"
+    },
+    {
+      "bytes": 609,
+      "path": "engine/manimble/themes/paper.py",
+      "sha256": "6db6db9cd56fc2010f9b61d30ef5de64b5d7c5cb06ce1aed79d2ddc2ba893c94"
+    },
+    {
+      "bytes": 611,
+      "path": "engine/manimble/themes/parchment.py",
+      "sha256": "6515c89d97371cbda4eecde9acf29863102de530955dca583b20e6028aa81087"
+    },
+    {
+      "bytes": 610,
+      "path": "engine/manimble/themes/slate.py",
+      "sha256": "ccfecd01b3bf53918d9b48f1c005139106d110cfe3370622fbb2108bc3c68614"
+    },
+    {
+      "bytes": 606,
+      "path": "engine/manimble/themes/terminal.py",
+      "sha256": "ac03da6e03b0b5a3cf7d3cfb6699966ae177a1fb25293fb81eef6fab0ac848a9"
+    },
+    {
+      "bytes": 55900,
+      "path": "engine/manimble/worker.py",
+      "sha256": "4b617e3c9c5edd64a34dfd1c45b533e7be373f0e496ac3d08ce88434a6d75591"
+    },
+    {
+      "bytes": 127,
+      "path": "engine/requirements.txt",
+      "sha256": "784e0838bbaf1b5f17d30094783e4a9231dd6300c48390a8bedc621f5611d520"
+    }
+  ],
+  "note": "Engine snapshot published with the GeWu adapter because the packaged engine includes local Manimble changes not present upstream.",
+  "packagedFrom": "ccfc5bc",
+  "schemaVersion": "gewu.engine-source/v1",
+  "upstream": "https://github.com/pachterlab/Manimble",
+  "upstreamBase": "a42f658dab5c61edfecf98e9688f38132568e009"
+}
