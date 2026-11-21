@@ -1,0 +1,14 @@
+[
+  {"send":{"id":"activate","op":"activate","params":{"apiVersion":"gewu.plugin/v1","instanceId":"fixture","generation":1,"workspaceId":"fixture","workspaceRoot":"${workspace}","settings":"${settings}"}}},
+  {"expect":{"id":"activate","type":"result"}},
+  {"send":{"id":"list","op":"call","params":{"tool":"tabs.list","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"list"}}}},
+  {"expect":{"id":"list","type":"result","result":{"ok":true,"data":{"tabs":[],"focusedTabId":null,"connected":false}}}},
+  {"send":{"id":"state","op":"call","params":{"tool":"browser.state","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"state"}}}},
+  {"expect":{"id":"state","type":"result","result":{"ok":true,"data":{"connected":false,"mode":"managed","takeover":false,"tabs":[],"focusedTabId":null,"activeCalls":[]}}}},
+  {"send":{"id":"attach","op":"call","params":{"tool":"view.attach","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"attach","viewId":"view","viewEpoch":1}}}},
+  {"expect":{"id":"attach","type":"result","result":{"ok":true}}},
+  {"send":{"id":"detach","op":"call","params":{"tool":"view.detach","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"detach","viewId":"view","viewEpoch":1}}}},
+  {"expect":{"id":"detach","type":"result","result":{"ok":true}}},
+  {"send":{"id":"stop","op":"deactivate","params":{"reason":"test complete"}}},
+  {"expect":{"id":"stop","type":"result","result":{"stopped":true}}}
+]

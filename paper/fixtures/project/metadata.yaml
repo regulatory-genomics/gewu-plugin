@@ -1,0 +1,7 @@
+title: Project title
+short-title: Legacy Stem
+contents:
+  - main.md
+  - methods.md
+supplement:
+  - appendix.md

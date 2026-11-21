@@ -1,0 +1,33 @@
+{
+  "policies": [
+    "external"
+  ],
+  "providers": [
+    {
+      "binaries": {
+        "paper": "{executable}"
+      },
+      "executable": {
+        "commands": [
+          "paper"
+        ],
+        "env": "GEWU_PAPER_EXECUTABLE"
+      },
+      "id": "paper-cli",
+      "kind": "external",
+      "probe": {
+        "args": [
+          "build",
+          "--help"
+        ],
+        "timeoutSeconds": 60
+      },
+      "target": {
+        "arch": "x86_64",
+        "libc": "glibc",
+        "os": "linux"
+      }
+    }
+  ],
+  "schemaVersion": "gewu.runtime-plan/v1"
+}

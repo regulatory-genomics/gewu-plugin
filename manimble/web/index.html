@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manimble</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<header>
+  <div class="group">
+    <button id="add" type="button" title="Add a slide after this one">+ Slide</button>
+    <button id="duplicate" type="button">Duplicate</button>
+    <button id="delete-slide" type="button">Delete slide</button>
+    <button id="up" type="button" aria-label="Move slide up">↑</button>
+    <button id="down" type="button" aria-label="Move slide down">↓</button>
+  </div>
+  <div class="group">
+    <button id="undo" type="button">Undo</button>
+    <button id="redo" type="button">Redo</button>
+  </div>
+  <div class="group">
+    <input id="text" type="text" placeholder="New text" aria-label="New text" size="10">
+    <button id="insert-text" type="button">Text</button>
+    <button id="insert-rect" type="button">Rectangle</button>
+    <button id="insert-circle" type="button">Circle</button>
+    <button id="insert-arrow" type="button">Arrow</button>
+  </div>
+  <div class="group">
+    <button id="group" type="button" disabled>Group</button>
+    <button id="ungroup" type="button" disabled>Ungroup</button>
+    <button id="front" type="button" disabled title="Bring to front">Front</button>
+    <button id="forward" type="button" disabled title="Bring forward">▲</button>
+    <button id="backward" type="button" disabled title="Send backward">▼</button>
+    <button id="back" type="button" disabled title="Send to back">Back</button>
+  </div>
+  <div class="group right">
+    <label class="zoom">Zoom <input id="zoom" type="range" min="0.3" max="2" step="0.1" value="1"></label>
+    <button id="export" type="button">Export PPTX</button>
+  </div>
+</header>
+<p id="status" role="status">Connecting to GeWu…</p>
+<main>
+  <nav id="slides" aria-label="Slides"></nav>
+  <section id="stage" aria-label="Slide canvas">
+    <div id="canvas" tabindex="0" role="application" aria-label="Slide objects"></div>
+  </section>
+  <aside id="inspector" aria-label="Selection"></aside>
+</main>
+<footer>
+  <div class="group" id="builds" role="group" aria-label="Builds"></div>
+  <span id="hint"></span>
+  <a id="download" hidden download>Download PowerPoint</a>
+</footer>
+<script type="module" src="editor.mjs"></script>
+</body>
+</html>

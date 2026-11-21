@@ -1,0 +1,77 @@
+{
+  "apiVersion": "gewu.plugin/v1",
+  "id": "gewu-browser",
+  "version": "0.1.2",
+  "title": "GeWu Browser",
+  "scope": "session",
+  "backend": {
+    "connector": "gewu-stdio",
+    "config": {
+      "entry": "bin/browser-gewu"
+    }
+  },
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "enum": [
+          "managed",
+          "cdp"
+        ]
+      },
+      "cdpEndpoint": {
+        "type": "string",
+        "minLength": 1
+      },
+      "headless": {
+        "type": "boolean"
+      },
+      "maxTabs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 16
+      },
+      "allowEvaluate": {
+        "type": "boolean"
+      },
+      "adoptExistingTabs": {
+        "type": "boolean"
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 60000
+      }
+    },
+    "if": {
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "const": "cdp"
+        }
+      }
+    },
+    "then": {
+      "required": [
+        "cdpEndpoint"
+      ]
+    }
+  },
+  "views": [
+    {
+      "id": "browser",
+      "title": "Browser",
+      "kind": "webview",
+      "placement": "main",
+      "entry": "web/index.html",
+      "resourceTypes": [
+        "gewu.browser.session"
+      ],
+      "stateSchema": {
+        "type": "object",
+        "additionalProperties": false
+      }
+    }
+  ]
+}

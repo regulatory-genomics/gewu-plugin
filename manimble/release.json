@@ -1,0 +1,9 @@
+{
+  "plugin": "manimble",
+  "version": "0.2.0",
+  "packageFiles": ["adapter.py", "plugin.json", "tools.schema.json", "README.md"],
+  "packageDirs": ["bin", "skills", "web"],
+  "sdkFile": "gewu_plugin.py",
+  "sdkDestination": "lib/gewu_plugin.py",
+  "buildInputs": ["embedded-python", "manim", "manim-slides", "python-pptx", "ffmpeg"]
+}

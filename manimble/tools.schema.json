@@ -1,0 +1,723 @@
+[
+  {
+    "name": "describe",
+    "description": "Describe the current Manimble deck and its ordered slides.",
+    "effect": "read",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "scenes"
+      ],
+      "properties": {
+        "scenes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "source",
+              "status"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "source": {
+                "type": "object"
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "source",
+    "description": "Read one slide class's Python source without rendering it. Use this before edit_source.",
+    "effect": "read",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "file",
+        "text"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "start": {
+          "type": "integer"
+        },
+        "end": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "state",
+    "description": "Deck state for the editor: slides, build status, undo/redo, document revision.",
+    "effect": "read",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "scenes",
+        "revision"
+      ],
+      "properties": {
+        "deck": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "canUndo": {
+          "type": "boolean"
+        },
+        "canRedo": {
+          "type": "boolean"
+        },
+        "undoLabel": {
+          "type": "string"
+        },
+        "scenes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "status"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "hidden": {
+                "type": "boolean"
+              },
+              "thumb": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "scene",
+    "description": "One rendered slide with its size, builds, object boxes, object info and PNG frames.",
+    "effect": "read",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "scene",
+        "size",
+        "objects",
+        "frames"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string"
+        },
+        "size": {
+          "type": "array"
+        },
+        "frame": {
+          "type": "array"
+        },
+        "objects": {
+          "type": "object"
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 1
+        },
+        "stops": {
+          "type": "array"
+        },
+        "builds": {
+          "type": "integer"
+        },
+        "source": {
+          "type": "object"
+        },
+        "text": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "render",
+    "description": "Render a named slide and return its PNG frames and source.",
+    "effect": "read",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "scene",
+        "source",
+        "text",
+        "frames"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string"
+        },
+        "source": {
+          "type": "object"
+        },
+        "text": {
+          "type": "string"
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "minItems": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "edit_source",
+    "description": "Replace a slide class. expectedText must equal the class source read with the source tool; or pass edits for a minimal oldText/newText patch.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene",
+        "source"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "uri",
+            "type",
+            "revision"
+          ],
+          "properties": {
+            "uri": {
+              "type": "string"
+            },
+            "type": {
+              "const": "manimble.source"
+            },
+            "mimeType": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "expectedText": {
+          "type": "string"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "oldText",
+              "newText"
+            ],
+            "properties": {
+              "oldText": {
+                "type": "string",
+                "minLength": 1
+              },
+              "newText": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  {
+    "name": "slide",
+    "description": "Add, duplicate, delete, reorder or hide a slide; order.txt follows automatically.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op"
+      ],
+      "properties": {
+        "op": {
+          "enum": [
+            "new",
+            "duplicate",
+            "delete",
+            "reorder",
+            "up",
+            "down",
+            "hide",
+            "unhide"
+          ]
+        },
+        "scene": {
+          "type": "string"
+        },
+        "layout": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expected": {
+          "type": "string"
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "select": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "insert",
+    "description": "Insert text, a shape or a table into a slide at a build stop.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene",
+        "kind"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "text",
+            "formula",
+            "rectangle",
+            "rounded",
+            "circle",
+            "ellipse",
+            "triangle",
+            "line",
+            "arrow",
+            "darrow",
+            "table"
+          ]
+        },
+        "value": {
+          "type": "string"
+        },
+        "tex": {
+          "type": "string"
+        },
+        "stop": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sx": {
+          "type": "number"
+        },
+        "sy": {
+          "type": "number"
+        },
+        "ex": {
+          "type": "number"
+        },
+        "ey": {
+          "type": "number"
+        },
+        "expected": {
+          "type": "string"
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "edit",
+    "description": "One engine edit on a slide object: text, wrapping, font, style, colour, move, resize, endpoints, rotate, size, order, group, align, spacing, decorate, link, highlight, clear_format, table or delete. Pass oids for multi-object order/group. A move at an earlier build sends build:true with stop.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scene",
+        "op"
+      ],
+      "properties": {
+        "scene": {
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "text",
+            "wrap",
+            "font",
+            "style",
+            "color",
+            "move",
+            "delete",
+            "endpoints",
+            "resize",
+            "decorate",
+            "link",
+            "highlight",
+            "align",
+            "columns",
+            "spacing",
+            "clear_format",
+            "size",
+            "order",
+            "group",
+            "ungroup",
+            "rotate",
+            "table"
+          ]
+        },
+        "oid": {
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "oids": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "stop": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "value": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "dx": {
+          "type": "number"
+        },
+        "dy": {
+          "type": "number"
+        },
+        "ratio": {
+          "type": "number"
+        },
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        },
+        "degrees": {
+          "type": "number"
+        },
+        "sx": {
+          "type": "number"
+        },
+        "sy": {
+          "type": "number"
+        },
+        "ex": {
+          "type": "number"
+        },
+        "ey": {
+          "type": "number"
+        },
+        "side": {
+          "enum": [
+            "left",
+            "right"
+          ]
+        },
+        "font": {
+          "type": "string"
+        },
+        "weight": {
+          "type": "string"
+        },
+        "slant": {
+          "type": "string"
+        },
+        "styles": {
+          "type": "object"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "on": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "color": {
+          "type": "string"
+        },
+        "opacity": {
+          "type": "number"
+        },
+        "rows": {
+          "type": "array"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "build": {
+          "type": "boolean"
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "undo",
+    "description": "Undo the last deck edit.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "redo",
+    "description": "Redo the last undone deck edit.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "revision"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "export",
+    "description": "Export the bound deck to a new PowerPoint document, waiting for the actual file.",
+    "effect": "write",
+    "target": "backend",
+    "exposeToAgent": true,
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format"
+      ],
+      "properties": {
+        "format": {
+          "const": "pptx"
+        },
+        "builds": {
+          "type": "boolean"
+        },
+        "editableText": {
+          "type": "boolean"
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "required": [
+        "format"
+      ],
+      "properties": {
+        "format": {
+          "const": "pptx"
+        }
+      }
+    }
+  }
+]

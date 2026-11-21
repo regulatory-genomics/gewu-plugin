@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser</title>
+<link rel="stylesheet" href="./browser.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="identity">
+    <h1>Browser</h1>
+    <span id="mode" class="pill">managed</span>
+    <span id="status" role="status">Connecting to GeWu…</span>
+  </div>
+  <div class="top-actions">
+    <button id="takeover-button" type="button" class="ghost">Take over</button>
+    <button id="resume-button" type="button" class="ghost" hidden>Resume agent</button>
+    <button id="cancel" type="button" class="danger" hidden>Stop agent</button>
+  </div>
+</header>
+
+<div id="takeover" class="banner" role="alert" hidden>
+  You have control. Agent write operations are paused until you choose
+  <strong>Resume agent</strong>.
+</div>
+
+<div id="address" class="address">
+  <span class="scheme" aria-hidden="true">◎</span>
+  <input id="open-url" aria-label="URL to open" placeholder="Enter a URL, then Go" spellcheck="false">
+  <button id="go" type="button" class="primary">Go</button>
+  <button id="new-tab" type="button" class="icon" aria-label="New tab" title="Open a new tab">＋</button>
+  <button id="refresh" type="button" class="icon" aria-label="Refresh" title="Refresh the live view">⟳</button>
+</div>
+
+<div id="tabs" class="tabs" role="tablist" aria-label="Browser tabs"></div>
+
+<main class="stage">
+  <section class="frame" aria-label="Live browser">
+    <div class="frame-bar">
+      <span id="frame-url" class="frame-url">No page</span>
+      <span id="frame-state" class="frame-state"></span>
+    </div>
+    <div id="live" class="live" tabindex="0" aria-label="Live browser surface">
+      <img id="live-frame" alt="Live browser" hidden>
+      <p id="frame-empty" class="empty">Open a page to start the live view.</p>
+    </div>
+  </section>
+  <div class="meta">
+    <span id="page-meta">No tab yet. Open a page above.</span>
+    <span id="last-action" class="muted"></span>
+    <div id="mouse-mode" class="modes" role="group" aria-label="Mouse button">
+      <button type="button" data-mode="left" class="active">Left</button>
+      <button type="button" data-mode="right">Right</button>
+      <button type="button" data-mode="middle">Middle</button>
+      <button type="button" data-mode="double">Double</button>
+    </div>
+  </div>
+</main>
+
+<script type="module" src="./browser.mjs"></script>
+</body>
+</html>

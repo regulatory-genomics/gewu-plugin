@@ -1,0 +1,9 @@
+{
+  "plugin": "inkscape",
+  "version": "0.2.0",
+  "packageFiles": ["plugin.json", "adapter.py", "contract.py", "document.py", "svg.py", "native.py", "workflow.py", "live.py", "remote.py", "native_document.py"],
+  "packageDirs": ["bin", "web", "desktop", "skills"],
+  "sdkFile": "gewu_plugin.py",
+  "sdkDestination": "lib/gewu_plugin.py",
+  "buildInputs": ["official Inkscape 1.4.4 AppImage", "Python 3.11", "requirements.txt", "runtime/components.lock.json", "noVNC 1.7.0", "TigerVNC + Metacity native workspace", "GeWu 0.1.8 WebSocket plugin services"]
+}

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" xmlns:xlink="http://www.w3.org/1999/xlink" width="180mm" height="120mm" viewBox="0 0 180 120">
+  <defs>
+    <linearGradient id="gradient"><stop stop-color="#147d92"/><stop offset="1" stop-color="#f0cc69"/></linearGradient>
+    <clipPath id="clip"><circle cx="24" cy="20" r="18"/></clipPath>
+    <mask id="mask"><rect width="80" height="45" fill="white"/><circle cx="40" cy="20" r="5" fill="black"/></mask>
+    <filter id="blur"><feGaussianBlur stdDeviation="0.3"/></filter>
+    <inkscape:path-effect id="effect" effect="spiro" is_visible="true" lpeversion="1"/>
+  </defs>
+  <sodipodi:namedview id="namedview" pagecolor="#ffffff" inkscape:document-units="mm"/>
+  <g id="plots" inkscape:groupmode="layer" inkscape:label="Editable curves">
+    <g id="nested" transform="translate(15 20)">
+      <path id="curve-a" d="M 0,20 C 12,-10 24,50 40,20" fill="none" stroke="#147d92" stroke-width="1"/>
+      <path id="curve-b" d="M 0,24 C 12,-6 24,54 40,24" fill="none" stroke="#d66b33" stroke-width="1"/>
+      <text id="axis" x="0" y="45" font-size="4"><tspan id="axis-prefix">Time </tspan><tspan id="axis-unit" font-style="italic">(s)</tspan></text>
+    </g>
+    <rect id="clipped" x="70" y="15" width="45" height="40" fill="url(#gradient)" clip-path="url(#clip)" transform="translate(70 5)"/>
+    <g id="masked" mask="url(#mask)" transform="translate(75 65)"><rect id="mask-source" width="70" height="35" fill="url(#gradient)"/></g>
+    <use id="clone" xlink:href="#curve-a" transform="translate(5 55)" opacity="0.6"/>
+    <path id="live-path" inkscape:path-effect="#effect" inkscape:original-d="M 10,90 C 20,70 30,110 40,90" d="M 10,90 H 40" fill="none" stroke="#7842a0"/>
+  </g>
+  <text id="label" x="15" y="12" font-size="5">Native fixture</text>
+</svg>

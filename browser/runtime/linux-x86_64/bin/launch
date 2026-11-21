@@ -1,0 +1,4 @@
+#!/bin/sh
+# The host sets GEWU_PLUGIN_ROOT and GEWU_RUNTIME_ROOT for a packed runtime.
+set -eu
+exec "$GEWU_RUNTIME_ROOT/bin/python" "$GEWU_PLUGIN_ROOT/adapter.py"

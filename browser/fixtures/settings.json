@@ -1,0 +1,6 @@
+{
+  "mode": "managed",
+  "headless": true,
+  "maxTabs": 4,
+  "timeoutMs": 8000
+}

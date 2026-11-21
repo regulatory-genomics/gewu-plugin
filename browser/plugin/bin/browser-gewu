@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launch the adapter with the packed runtime when GeWu selected one. The
+# runtime owns Playwright and Chromium; the package owns only this adapter.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -n "${GEWU_RUNTIME_ROOT:-}" ] && [ -x "$GEWU_RUNTIME_ROOT/bin/python" ]; then
+  exec "$GEWU_RUNTIME_ROOT/bin/python" "$here/../adapter.py"
+fi
+exec "${GEWU_BROWSER_PYTHON:-python3}" "$here/../adapter.py"

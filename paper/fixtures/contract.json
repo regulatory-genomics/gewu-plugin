@@ -1,0 +1,8 @@
+[
+  {"send":{"id":"activate","op":"activate","params":{"apiVersion":"gewu.plugin/v1","instanceId":"fixture","generation":1,"workspaceId":"fixture","workspaceRoot":"${workspace}","settings":"${settings}"}}},
+  {"expect":{"id":"activate","type":"result","result":{"serviceEndpoints":[]}}},
+  {"send":{"id":"bad","op":"call","params":{"tool":"init","args":{"directory":"../outside"},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"bad"}}}},
+  {"expect":{"id":"bad","type":"result","result":{"ok":false,"error":{"code":"INVALID_PATH"}}}},
+  {"send":{"id":"stop","op":"deactivate","params":{"reason":"test complete"}}},
+  {"expect":{"id":"stop","type":"result","result":{"stopped":true}}}
+]

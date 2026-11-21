@@ -1,0 +1,23 @@
+{
+  "plugin": "gewu-browser",
+  "version": "0.1.2",
+  "packageFiles": [
+    "adapter.py",
+    "backend.py",
+    "plugin.json",
+    "tools.schema.json",
+    "README.md"
+  ],
+  "packageDirs": [
+    "bin",
+    "lib",
+    "skills",
+    "web"
+  ],
+  "sdkFile": "gewu_plugin.py",
+  "sdkDestination": "lib/gewu_plugin.py",
+  "buildInputs": [
+    "playwright",
+    "chromium"
+  ]
+}

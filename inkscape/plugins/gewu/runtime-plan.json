@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "gewu.runtime-plan/v1",
+  "policies": ["external", "bundled"],
+  "providers": [
+    {
+      "kind": "external",
+      "id": "inkscape-python",
+      "target": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+      "executable": {"env": "GEWU_INKSCAPE_PYTHON", "commands": ["python3.11", "python3"]},
+      "probe": {
+        "args": ["-c", "import pathlib, subprocess, sys, tempfile, shutil, lxml, tinycss2, cssselect2, PIL, jsonschema, aiohttp, websockify, svgpathtools; p=pathlib.Path(sys.executable).parent/'inkscape'; binary=str(p) if p.is_file() else shutil.which('inkscape'); assert binary, 'Inkscape not found'; assert shutil.which('Xvnc') or shutil.which('Xtigervnc'), 'Native desktop needs TigerVNC'; assert shutil.which('openbox') or shutil.which('metacity'), 'Native desktop needs a window manager'; assert shutil.which('dbus-run-session'), 'Native desktop needs D-Bus'; version=subprocess.check_output([binary,'--version'],text=True,timeout=10); assert version.startswith('Inkscape 1.4.4'),version; t=tempfile.TemporaryDirectory(); d=pathlib.Path(t.name); s=d/'probe.svg'; s.write_text('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>'); o=d/'probe.png'; subprocess.run([binary,'--app-id-tag=gewu','--export-type=png','--export-filename='+str(o),str(s)],check=True,timeout=20); assert o.read_bytes().startswith(bytes([137,80,78,71])); print(version.strip())"],
+        "timeoutSeconds": 35
+      },
+      "binaries": {"python3": "{executable}", "python": "{executable}", "launch": "{executable}"}
+    }
+  ]
+}

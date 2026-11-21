@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<header>
+  <div class="group">
+    <label class="project"><span id="project"></span></label>
+    <span id="revision" class="revision"></span>
+  </div>
+  <div class="group">
+    <button id="undo" type="button" disabled>Undo</button>
+    <button id="redo" type="button" disabled>Redo</button>
+  </div>
+  <div class="group right">
+    <button id="build-html" type="button">Build HTML</button>
+    <button id="download" type="button" hidden>Download</button>
+  </div>
+</header>
+<p id="status" role="status">Connecting to GeWu…</p>
+<main>
+  <article id="document" aria-label="Manuscript"></article>
+</main>
+<footer>
+  <span id="hint">Click a paragraph to edit it. Ctrl/Cmd+S saves. Blocks with citations, maths or tables open as Markdown source.</span>
+</footer>
+<script type="module" src="editor.mjs"></script>
+</body>
+</html>

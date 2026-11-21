@@ -1,0 +1,8 @@
+title: Editable fixture
+short-title: Editable
+contents:
+  - main.md
+  - complex.md
+  - crlf.md
+supplement:
+  - supplement.md

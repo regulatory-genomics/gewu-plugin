@@ -1,0 +1,10 @@
+[
+  {"send":{"id":"activate","op":"activate","params":{"apiVersion":"gewu.plugin/v1","instanceId":"fixture","generation":1,"workspaceId":"fixture","workspaceRoot":"${workspace}","bindingResource":{"uri":"workspace:///deck","type":"manimble.deck"},"settings":"${settings}"}}},
+  {"expect":{"id":"activate","type":"result","result":{"serviceEndpoints":[]}}},
+  {"send":{"id":"read","op":"call","params":{"tool":"describe","args":{},"context":{"instanceId":"fixture","generation":1,"workspaceId":"fixture","callId":"read"}}}},
+  {"expect":{"id":"read","type":"result","result":{"ok":true}}},
+  {"send":{"id":"resolve","op":"resolve","params":{"uri":"workspace:///deck/slides.py","type":"manimble.source"}}},
+  {"expect":{"id":"resolve","type":"result","result":{"kind":"file","mimeType":"text/x-python"}}},
+  {"send":{"id":"stop","op":"deactivate","params":{"reason":"test complete"}}},
+  {"expect":{"id":"stop","type":"result","result":{"stopped":true}}}
+]

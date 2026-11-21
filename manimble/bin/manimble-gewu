@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -d "$dir/lib" ]; then
+  export PYTHONPATH="$dir/lib"
+fi
+# A packed runtime ships its own interpreter; legacy packages use PATH.
+python=python3
+if [ -n "${GEWU_RUNTIME_ROOT:-}" ] && [ -x "$GEWU_RUNTIME_ROOT/bin/python3" ]; then
+  python="$GEWU_RUNTIME_ROOT/bin/python3"
+fi
+exec "$python" "$dir/adapter.py"

@@ -1,0 +1,20 @@
+:root {color-scheme:light dark;font:14px system-ui,sans-serif;--surface:light-dark(#fff,#20252c);--bg:light-dark(#f0f3f7,#14181d);--line:light-dark(#d0d7de,#485361);--accent:#438ce6}
+* {box-sizing:border-box} body {margin:0;background:var(--bg)} [hidden] {display:none!important}
+header,nav,#empty {padding:.7rem;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;background:var(--surface);border-bottom:1px solid var(--line)}
+header strong {margin-right:auto} #status.error {color:light-dark(#a31825,#ff8693)}
+button,input,select,textarea {font:inherit;color:inherit} button {padding:.3rem .55rem;border:1px solid var(--line);border-radius:5px;background:var(--surface);cursor:pointer} button:disabled {opacity:.48;cursor:default}
+a {color:light-dark(#1556a0,#8ebfff)} :focus-visible {outline:2px solid var(--accent);outline-offset:2px}
+.workspace {display:grid;grid-template-columns:minmax(0,1fr) minmax(160px,245px);height:calc(100vh - 90px)}
+.viewport {min-width:0;overflow:auto;padding:18px;display:block}
+#canvas {position:relative;background:white;box-shadow:0 1px 8px #0005;touch-action:none;user-select:none;margin:auto}
+#canvas img {display:block;width:100%;height:100%;object-fit:fill;pointer-events:none} #hits {position:absolute;inset:0;overflow:hidden}
+.hit {position:absolute;border:1px solid transparent;background:transparent;border-radius:0;padding:0;min-width:3px;min-height:3px;touch-action:none;cursor:move}
+.hit:hover,.hit.selected {border-color:var(--accent);background:#438ce622} .hit[aria-disabled=true] {cursor:not-allowed}
+.handle {position:absolute;width:10px;height:10px;right:-4px;bottom:-4px;border:1px solid white;background:#2172bc;cursor:nwse-resize}
+.marquee {position:absolute;border:1px solid var(--accent);background:#438ce633;pointer-events:none}
+aside {overflow:auto;padding:.65rem;background:var(--surface);border-left:1px solid var(--line)} h2,h3 {font-size:1rem;margin:.35rem 0}
+#objects {max-height:11rem;overflow:auto;display:grid;gap:2px} .object-row {text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .object-row[aria-pressed=true] {background:#438ce644}
+details {border-top:1px solid var(--line);margin-top:.65rem;padding-top:.55rem} summary {cursor:pointer;margin-bottom:.4rem} .fields {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.3rem}
+#live-preview {width:100%;background:white}
+aside label {display:block} aside input:not([type=color]),textarea {width:100%;margin-bottom:.25rem} aside button {margin:2px 1px} p {overflow-wrap:anywhere} #conflict {padding:0 .7rem}
+@media(max-width:540px) {.workspace {grid-template-columns:1fr;height:auto}.viewport {min-height:20vh} aside {border-left:0;border-top:1px solid var(--line)}}

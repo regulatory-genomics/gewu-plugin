@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inkscape</title>
+<link rel="stylesheet" href="native.css"><script type="module" src="native.mjs"></script></head>
+<body>
+<header><strong>Inkscape</strong><span id="document"></span><span id="status" role="status">Starting native editor…</span>
+<button id="save" disabled>Save</button><button id="import" disabled>Import…</button>
+<label>Page <input id="page" type="number" min="1" value="1"></label><label>PDF text <select id="pdf-text"><option value="preserve">Editable</option><option value="paths">Outlines</option></select></label><label>PNG DPI <input id="dpi" type="number" min="24" max="1200" value="300"></label>
+<button data-format="svg" disabled>Export SVG</button><button data-format="pdf" disabled>Export PDF</button><button data-format="png" disabled>Export PNG</button>
+<button id="fit" disabled>Fit workspace</button><button id="maximize">Maximize</button><button id="reconnect" hidden>Reconnect</button></header>
+<section id="error" role="alert" hidden></section>
+<div id="screen" aria-label="Native Inkscape desktop"></div>
+<footer><span id="selection">Native tools, layers and undo are shared with the agent.</span><label>Paste text <input id="paste" type="text" placeholder="Text to insert at native text cursor"></label><button id="paste-send" disabled>Send text</button><span id="download"></span></footer>
+</body></html>

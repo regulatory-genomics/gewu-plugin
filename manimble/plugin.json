@@ -1,0 +1,82 @@
+{
+  "apiVersion": "gewu.plugin/v1",
+  "id": "manimble",
+  "version": "0.2.0",
+  "title": "Manimble",
+  "scope": "resource",
+  "backend": {
+    "connector": "gewu-stdio",
+    "config": {
+      "entry": "bin/manimble-gewu"
+    }
+  },
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+        "required": [],
+    "properties": {
+      "python": {
+        "type": "string",
+        "minLength": 1
+      },
+      "engineRoot": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "views": [
+    {
+      "id": "editor",
+      "title": "Slide editor",
+      "kind": "webview",
+      "placement": "main",
+      "entry": "web/index.html",
+      "resourceTypes": [
+        "manimble.deck"
+      ],
+      "stateSchema": {
+        "type": "object",
+        "properties": {
+          "scene": {
+            "type": "string"
+          },
+          "build": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selection": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "zoom": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "source",
+      "title": "Slide source",
+      "kind": "builtin",
+      "placement": "sidebar",
+      "resourceTypes": [
+        "manimble.source"
+      ],
+      "renderer": "text"
+    },
+    {
+      "id": "preview",
+      "title": "Slide preview",
+      "kind": "builtin",
+      "placement": "sidebar",
+      "resourceTypes": [
+        "manimble.preview"
+      ],
+      "renderer": "preview"
+    }
+  ]
+}

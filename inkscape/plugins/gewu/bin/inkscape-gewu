@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$dir/lib"
+if [ -n "${GEWU_RUNTIME_ROOT:-}" ] && [ -x "$GEWU_RUNTIME_ROOT/bin/python3" ]; then
+    exec "$GEWU_RUNTIME_ROOT/bin/python3" "$dir/adapter.py"
+fi
+exec "${GEWU_PLUGIN_PYTHON:-python3}" "$dir/adapter.py"

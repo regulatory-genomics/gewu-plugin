@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "gewu.plugin-sources/v1",
+  "repository": "https://github.com/regulatory-genomics/gewu-plugin",
+  "plugins": {
+    "gewu-browser": {
+      "version": "0.1.2",
+      "application": "./browser",
+      "plugin": "./browser/plugin",
+      "runtimeRecipe": "./browser/runtime",
+      "buildScript": "./browser/scripts/stage-bundled-runtime.sh"
+    },
+    "paper": {
+      "version": "0.3.1",
+      "application": "https://github.com/regulatory-genomics/paper",
+      "plugin": "./paper",
+      "runtimeRecipe": "./paper/runtime-plan.json",
+      "buildScript": "./paper/package.py"
+    },
+    "manimble": {
+      "version": "0.2.0",
+      "application": "https://github.com/pachterlab/Manimble",
+      "plugin": "./manimble",
+      "runtimeRecipe": "./manimble/runtime-plan.json",
+      "buildScript": "./manimble/build-release.py"
+    },
+    "inkscape": {
+      "version": "0.1.0",
+      "application": "https://gitlab.com/inkscape/inkscape",
+      "plugin": "./inkscape/plugins/gewu",
+      "runtimeRecipe": "./inkscape/runtime-linux-x86_64.json",
+      "buildScript": "./inkscape/plugins/gewu/package.py"
+    }
+  }
+}

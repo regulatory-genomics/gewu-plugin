@@ -1,0 +1,21 @@
+#!/bin/sh
+# Verify the browser on a local blank page. GeWu runs this in the staged
+# generation before activating the plugin.
+set -eu
+"$GEWU_RUNTIME_ROOT/bin/python" - <<'PY'
+import os
+import sys
+import playwright
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    executable = p.chromium.executable_path
+    if not executable or not os.path.exists(executable):
+        raise SystemExit(f"chromium executable is missing: {executable}")
+    browser = p.chromium.launch(headless=True, timeout=20_000)
+    try:
+        browser.new_page().goto("about:blank", timeout=5_000)
+    finally:
+        browser.close()
+print(f"ok python={sys.version.split()[0]} chromium={executable}")
+PY

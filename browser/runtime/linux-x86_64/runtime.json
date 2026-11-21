@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "gewu.runtime/v1",
+  "id": "gewu-browser-runtime",
+  "version": "0.1.0",
+  "plugin": "gewu-browser",
+  "target": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+  "launcher": "bin/launch",
+  "probe": "bin/probe",
+  "capabilities": ["chromium", "playwright", "managed-browser"]
+}
