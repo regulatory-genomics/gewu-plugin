@@ -12,6 +12,7 @@ repositories; this repository holds the integration layer GeWu actually loads.
 | Paper | [`paper/`](paper/) | <https://github.com/regulatory-genomics/paper> |
 | Manimble | [`manimble/`](manimble/) | [`manimble/engine`](manimble/engine) (snapshot; upstream <https://github.com/pachterlab/Manimble>) |
 | Inkscape | [`inkscape/plugins/gewu`](inkscape/plugins/gewu) | <https://gitlab.com/inkscape/inkscape> (application); adapter is here |
+| Hyperframes | [`hyperframes/`](hyperframes/) | <https://github.com/heygen-com/hyperframes> (monorepo-coupled snapshot; build it inside the application checkout) |
 
 Exact source snapshots for the older Marketplace releases are under
 [`releases/paper/`](releases/paper/) (adapter 0.2.0, application 0.3.4) and

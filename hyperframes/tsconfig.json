@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node", "vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@hyperframes/studio": ["../../packages/studio/dist/index.d.ts"],
+      "@hyperframes/shader-transitions": ["../../packages/shader-transitions/dist/index.d.ts"]
+    },
+    "noEmit": true
+  },
+  "include": ["src", "web", "tests"]
+}

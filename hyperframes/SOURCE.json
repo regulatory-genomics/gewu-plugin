@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/heygen-com/hyperframes",
+  "sourceCommit": "c96e5d4dc39a83c221eb433956eaaa8ee42750cb",
+  "pluginPath": "plugins/gewu",
+  "pluginVersion": "0.1.0",
+  "build": "bun run plugins/gewu/build.ts, executed in a Hyperframes checkout at sourceCommit; the adapter imports packages/cli and packages/studio and needs the monorepo registry/",
+  "runtimePolicy": ["external"]
+}

@@ -1,0 +1,50 @@
+{
+  "apiVersion": "gewu.plugin/v1",
+  "id": "hyperframes",
+  "version": "0.1.0",
+  "title": "Hyperframes",
+  "scope": "resource",
+  "backend": { "connector": "gewu-stdio", "config": { "entry": "bin/hyperframes-gewu" } },
+  "settingsSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "chromePath": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Chromium or chrome-headless-shell used for checks, frames and rendering. Omit to use the host PATH."
+      },
+      "ffmpegPath": { "type": "string", "minLength": 1 },
+      "ffprobePath": { "type": "string", "minLength": 1 }
+    }
+  },
+  "views": [
+    {
+      "id": "studio",
+      "title": "Video Studio",
+      "kind": "webapp",
+      "placement": "main",
+      "serviceId": "studio",
+      "entryPath": "/",
+      "resourceTypes": ["hyperframes.project"],
+      "stateSchema": {
+        "type": "object",
+        "properties": {
+          "currentTime": { "type": "number", "minimum": 0 },
+          "compositionPath": { "type": "string" },
+          "selection": { "type": "array", "items": { "type": "string" }, "maxItems": 100 },
+          "renderCallId": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "video",
+      "title": "Video output",
+      "kind": "builtin",
+      "placement": "sidebar",
+      "resourceTypes": ["hyperframes.video", "hyperframes.frame"],
+      "renderer": "preview"
+    }
+  ]
+}

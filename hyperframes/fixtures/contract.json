@@ -1,0 +1,14 @@
+[
+  {"send":{"id":"activate","op":"activate","params":{"apiVersion":"gewu.plugin/v1","instanceId":"hf-contract","generation":1,"workspaceId":"test","workspaceRoot":"${workspace}","bindingResource":{"uri":"workspace:///video","type":"hyperframes.project"},"settings":"${settings}"}}},
+  {"expect":{"id":"activate","type":"result"}},
+  {"send":{"id":"create","op":"call","params":{"tool":"project.create","args":{"duration":4},"context":{"instanceId":"hf-contract","generation":1,"workspaceId":"test","callId":"call-create"}}}},
+  {"expect":{"id":"create","type":"result","result":{"ok":true,"data":{"saved":true}}}},
+  {"send":{"id":"inspect","op":"call","params":{"tool":"project.inspect","args":{},"context":{"instanceId":"hf-contract","generation":1,"workspaceId":"test","callId":"call-inspect"}}}},
+  {"expect":{"id":"inspect","type":"result","result":{"ok":true,"data":{"projectId":"video"}}}},
+  {"send":{"id":"bad","op":"call","params":{"tool":"source.read","args":{"path":"../outside"},"context":{"instanceId":"hf-contract","generation":1,"workspaceId":"test","callId":"bad-path"}}}},
+  {"expect":{"id":"bad","type":"result","result":{"ok":false,"error":{"code":"INVALID_PATH"}}}},
+  {"send":{"id":"cancel","op":"cancel","params":{"callId":"missing"}}},
+  {"expect":{"id":"cancel","type":"result","result":{"state":"not_found"}}},
+  {"send":{"id":"stop","op":"deactivate","params":{"reason":"test complete"}}},
+  {"expect":{"id":"stop","type":"result","result":{"stopped":true}}}
+]

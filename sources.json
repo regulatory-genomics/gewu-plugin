@@ -53,6 +53,14 @@
       "plugin": "./inkscape/plugins/gewu",
       "runtimeRecipe": "./inkscape/runtime-linux-x86_64.json",
       "buildScript": "./inkscape/plugins/gewu/package.py"
+    },
+    "hyperframes": {
+      "version": "0.1.0",
+      "application": "https://github.com/heygen-com/hyperframes",
+      "plugin": "./hyperframes",
+      "runtimeRecipe": "./hyperframes/runtime-plan.json",
+      "installationGuide": "./hyperframes/INSTALL.md",
+      "originalSourceCommit": "c96e5d4dc39a83c221eb433956eaaa8ee42750cb"
     }
   }
 }

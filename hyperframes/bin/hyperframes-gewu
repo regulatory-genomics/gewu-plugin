@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+ROOT=${GEWU_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)}
+# Node, Chromium and FFmpeg come from the host; see INSTALL.md.
+exec node "$ROOT/engine/cli/gewuAdapter.js"
