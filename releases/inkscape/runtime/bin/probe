@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+root=${GEWU_RUNTIME_ROOT:-$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)}
+export PATH="$root/bin:/usr/bin:/bin"
+exec "$root/bin/python3" - "$root/bin/inkscape" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import lxml, tinycss2, cssselect2, PIL, jsonschema
+
+binary = sys.argv[1]
+version = subprocess.check_output([binary, '--version'], text=True, timeout=10).strip()
+assert version.startswith('Inkscape 1.4.4'), version
+with tempfile.TemporaryDirectory() as temp:
+    source = Path(temp) / 'probe.svg'
+    output = Path(temp) / 'probe.png'
+    source.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>')
+    subprocess.run([binary, '--app-id-tag=gewu', '--export-type=png', '--export-filename=' + str(output), str(source)], check=True, timeout=30)
+    assert output.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'), 'Inkscape did not export PNG'
+print(version)
+PY

@@ -13,15 +13,17 @@ repositories; this repository holds the integration layer GeWu actually loads.
 | Manimble | [`manimble/`](manimble/) | [`manimble/engine`](manimble/engine) (snapshot; upstream <https://github.com/pachterlab/Manimble>) |
 | Inkscape | [`inkscape/plugins/gewu`](inkscape/plugins/gewu) | <https://gitlab.com/inkscape/inkscape> (application); adapter is here |
 
+Exact source snapshots for the older Marketplace releases are under
+[`releases/paper/`](releases/paper/) (adapter 0.2.0, application 0.3.4) and
+[`releases/inkscape/`](releases/inkscape/) (panel adapter 0.1.1). Each includes
+`SOURCE.json` and a matching `INSTALL.md`; use the commit pinned by the release,
+not the newer adapters in the top-level directories.
+The exact Inkscape 0.1.0 snapshot is retained at commit
+`5c3f5942f9c1b2ea852ddfc53d5cb71884d23987`.
+
 Machine-readable source metadata is in [`sources.json`](sources.json). A
 Marketplace release should pin this repository at the commit used to build the
 package and set the fallback links to that commit:
-
-Exact source snapshots for the older Marketplace releases are under
-[`releases/paper/`](releases/paper/) (adapter 0.2.0, application 0.3.4) and
-[`releases/inkscape/`](releases/inkscape/) (panel adapter 0.1.0). Each includes
-`SOURCE.json` and a matching `INSTALL.md`; use the commit pinned by the release,
-not the newer adapters in the top-level directories.
 
 ```text
 application-source=<application source URL at the exact commit>

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "gewu.runtime/v1",
+  "id": "inkscape-runtime",
+  "version": "0.1.1",
+  "plugin": "inkscape",
+  "target": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+  "launcher": "bin/launch",
+  "probe": "bin/probe",
+  "capabilities": ["svg", "pdf", "png"]
+}

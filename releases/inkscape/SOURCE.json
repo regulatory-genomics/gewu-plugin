@@ -1,5 +1,6 @@
 {
   "sourceCommit": "a854afd4ddd7b127f3673264b6ba0e72ada6992c",
   "repository": "ssh://git@172.16.211.53:2222/gilbert/gewu-inkscape.git",
-  "pluginVersion": "0.1.0"
+  "pluginVersion": "0.1.1",
+  "changes": ["package version", "packed-runtime probe and manifest"]
 }

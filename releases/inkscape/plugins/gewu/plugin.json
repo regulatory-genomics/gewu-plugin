@@ -1,7 +1,7 @@
 {
   "apiVersion": "gewu.plugin/v1",
   "id": "inkscape",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "title": "Inkscape",
   "scope": "resource",
   "backend": {"connector": "gewu-stdio", "config": {"entry": "bin/inkscape-gewu"}},

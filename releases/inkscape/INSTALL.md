@@ -1,7 +1,8 @@
-# Inkscape panel plugin 0.1.0: install from source
+# Inkscape panel plugin 0.1.1: install from source
 
-This is the **0.1.0 panel editor**, exported from
-`a854afd4ddd7b127f3673264b6ba0e72ada6992c`; see `SOURCE.json`.
+This is the **0.1.1 panel editor**, based on the unchanged 0.1.0 adapter from
+`a854afd4ddd7b127f3673264b6ba0e72ada6992c`; see `SOURCE.json`. The version bump
+delivers a corrected packed-runtime probe; native-workspace code is not added.
 It does not require a WebSocket-enabled host, VNC or a physical display.
 The top-level `inkscape/` directory is the separate 0.2 native-workspace preview.
 
@@ -29,7 +30,7 @@ below. Start GeWu with this environment's Python on PATH and restart after CLI
 installation. Preserve existing configuration entries and documents.
 
 ```sh
-gewu plugin check inkscape --version 0.1.0 --probe --workspace "$WORKSPACE" \
+gewu plugin check inkscape --version 0.1.1 --probe --workspace "$WORKSPACE" \
   --resource workspace:///figure.svg --resource-type inkscape.document \
   --settings /absolute/path/to/inkscape-settings.json
 ```

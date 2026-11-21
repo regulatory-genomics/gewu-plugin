@@ -1,6 +1,6 @@
 {
   "plugin": "inkscape",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageFiles": ["plugin.json", "adapter.py", "contract.py", "document.py", "svg.py", "native.py", "workflow.py", "live.py", "remote.py"],
   "packageDirs": ["bin", "web", "desktop", "skills"],
   "sdkFile": "gewu_plugin.py",
