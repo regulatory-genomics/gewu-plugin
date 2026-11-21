@@ -1,0 +1,9 @@
+# Local test runtimes, extracted applications and build products are releases,
+# not source. Keep this repository small and reproducible.
+.gewu-test/
+.preview/
+.runtime/
+__pycache__/
+*.py[cod]
+*.zip
+*.AppImage
