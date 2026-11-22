@@ -49,7 +49,7 @@
       "buildScript": "./manimble/build-release.py"
     },
     "inkscape": {
-      "version": "0.2.1",
+      "version": "0.2.2",
       "application": "https://gitlab.com/inkscape/inkscape",
       "plugin": "./inkscape/plugins/gewu",
       "runtimeRecipe": "./inkscape/runtime/build.py",
