@@ -63,7 +63,8 @@
       "version": "3.14.1.0",
       "sha256": "4cdc837b23f59eb7b273dee886617dc28ea8e8ced7d89e276be2b8b95f3ba393"
     },
-    "binarySha256": "6d12cb363d4798eb27c2b57323a3c9ab39763dd0c434921c9abc0194a8b2f5c4"
+    "binarySha256": "6d12cb363d4798eb27c2b57323a3c9ab39763dd0c434921c9abc0194a8b2f5c4",
+    "pandocDataSha256": "be1d2fe6b0230e12c82f9d8b67feb0fc53b7ae87cb37e5bb2db54018e0d8dfb9"
   },
   "manimble": {
     "pixiLockSha256": "50bd1d5c73ded52c38658d2d933c5d73e86a5214a923849810477b178845faad",

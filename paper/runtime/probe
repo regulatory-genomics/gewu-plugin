@@ -3,4 +3,5 @@ set -eu
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="$GEWU_PLUGIN_ROOT:$GEWU_PLUGIN_ROOT/lib"
 export PATH="$GEWU_RUNTIME_ROOT/bin:/usr/bin:/bin"
+export pandoc_datadir="$GEWU_RUNTIME_ROOT/pandoc-data"
 exec "$GEWU_RUNTIME_ROOT/python/bin/python3" "$GEWU_RUNTIME_ROOT/smoke.py"
