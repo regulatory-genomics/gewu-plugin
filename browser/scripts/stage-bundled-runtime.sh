@@ -36,23 +36,34 @@ python_root=$(dirname "$(dirname "$python")")
 cp -aL "$python_root/." "$out/python/"
 
 "$uv" pip install --quiet --python "$out/python/bin/python3" \
-    --target "$out/site-packages" --index-url "${GEWU_BROWSER_PYPI_INDEX:-https://pypi.org/simple}" \
-    "playwright==1.59.0"
+    --target "$out/site-packages" --require-hashes \
+    --index-url "${GEWU_BROWSER_PYPI_INDEX:-https://pypi.org/simple}" \
+    -r "$here/requirements-runtime.lock"
 
-browser_path=$(PLAYWRIGHT_BROWSERS_PATH="$out/ms-playwright" PYTHONPATH="$out/site-packages" \
-    "$out/python/bin/python3" -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
-revision_dir=${browser_path#"$out/ms-playwright/"}
-revision_dir=${revision_dir%%/*}
-cache=${PLAYWRIGHT_CACHE:-$HOME/.cache/ms-playwright}
-for name in "$revision_dir" "ffmpeg-1011"; do
-    if [[ -d "$cache/$name" ]]; then
-        cp -a "$cache/$name" "$out/ms-playwright/"
-        rm -rf "$out/ms-playwright/$name/.links"
-    fi
-done
+if [[ -n "${GEWU_BROWSER_CHROMIUM_ZIP:-}" ]]; then
+    chromium_zip=$(realpath "$GEWU_BROWSER_CHROMIUM_ZIP")
+    expected=${GEWU_BROWSER_CHROMIUM_SHA256:?set GEWU_BROWSER_CHROMIUM_SHA256 with GEWU_BROWSER_CHROMIUM_ZIP}
+    actual=$(sha256sum "$chromium_zip" | cut -d' ' -f1)
+    [[ "$actual" == "$expected" ]] || { echo "Chromium archive hash mismatch: $actual" >&2; exit 2; }
+    mkdir -p "$out/ms-playwright/chromium-1217"
+    unzip -q "$chromium_zip" -d "$out/ms-playwright/chromium-1217"
+    browser_path="$out/ms-playwright/chromium-1217/chrome-linux64/chrome"
+else
+    browser_path=$(PLAYWRIGHT_BROWSERS_PATH="$out/ms-playwright" PYTHONPATH="$out/site-packages" \
+        "$out/python/bin/python3" -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+    revision_dir=${browser_path#"$out/ms-playwright/"}
+    revision_dir=${revision_dir%%/*}
+    cache=${PLAYWRIGHT_CACHE:-$HOME/.cache/ms-playwright}
+    for name in "$revision_dir" "ffmpeg-1011"; do
+        if [[ -d "$cache/$name" ]]; then
+            cp -a "$cache/$name" "$out/ms-playwright/"
+            rm -rf "$out/ms-playwright/$name/.links"
+        fi
+    done
+fi
 if [[ ! -x "$browser_path" ]]; then
-    PLAYWRIGHT_BROWSERS_PATH="$out/ms-playwright" PYTHONPATH="$out/site-packages" \
-        "$out/python/bin/python3" -m playwright install --no-shell chromium
+    echo "Chromium executable is missing: $browser_path" >&2
+    exit 2
 fi
 python3 "$here/../scripts/stage-linux-libraries.py" --out "$out/chromium-libs" "$browser_path"
 python3 "$here/../scripts/stage-fonts.py" --out "$out/fonts" --license "$here/../assets/DejaVu-LICENSE.txt"
@@ -93,4 +104,4 @@ Path(sys.argv[2]).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\
 PY
 
 GEWU_RUNTIME_ROOT="$out" "$out/bin/probe"
-echo "runtime staged at $out ($revision_dir)"
+echo "runtime staged at $out (${revision_dir:-chromium-1217})"

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "gewu.runtime-inputs/v1",
+  "target": "linux-x86_64",
+  "python": {
+    "version": "3.11.15",
+    "build": "20260807",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.11.15%2B20260807-x86_64-unknown-linux-gnu-install_only.tar.gz",
+    "sha256": "b9fff092374acebc451bb881156afe6a58991213d25386358742fee296128909"
+  },
+  "browser": {
+    "requirementsLock": "browser/requirements-runtime.lock",
+    "playwright": "1.59.0",
+    "chromium": {
+      "revision": "1217",
+      "version": "147.0.7727.15",
+      "url": "https://cdn.playwright.dev/builds/cft/147.0.7727.15/linux64/chrome-linux64.zip",
+      "sha256": "04883e331b31448d6255fa058f0e1c7e8657c004da1f8a1c04eb28855a37ec6c"
+    },
+    "headlessShell": {
+      "revision": "1217",
+      "version": "147.0.7727.15",
+      "url": "https://cdn.playwright.dev/builds/cft/147.0.7727.15/linux64/chrome-headless-shell-linux64.zip",
+      "sha256": "cf779cd5486f3fc5a18bea4ac606026a1667ae16efaee15af51bd3ad3ae01092"
+    },
+    "ffmpeg": {
+      "revision": "1011",
+      "url": "https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/1011/ffmpeg-linux.zip",
+      "sha256": "ebc74fc5b94830176a3c2914ae96bd8bc7f6a91f4f33890230f84a172ee61ccc"
+    }
+  },
+  "hyperframes": {
+    "node": {
+      "version": "22.23.0",
+      "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-linux-x64.tar.xz",
+      "sha256": "14d7de44f235534799f8b171a4050d9a6a4bc99c87e053a25d3d54afa580aa20"
+    },
+    "ffmpeg": {
+      "version": "7.0.2",
+      "sha256": "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67"
+    },
+    "bun": {
+      "version": "1.3.14",
+      "sha256": "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
+    }
+  },
+  "inkscape": {
+    "appImage": {
+      "version": "1.4.4",
+      "url": "https://media.inkscape.org/media/resources/file/Inkscape-1.4.4.AppImage?download=1",
+      "sha256": "d217fe05c92faaed5c3af46856b6299c98933dc722819cb5bc2ca052c5522166"
+    }
+  },
+  "paper": {
+    "source": "https://github.com/regulatory-genomics/paper",
+    "commit": "e0094d733910200d122f39faa5cc987b2c87983e",
+    "ghc": {
+      "version": "9.12.2",
+      "sha256": "b708420f792dda86898e1ac649a77d8fc7b5e03b3e8da4e813d58acf1e7c943c"
+    },
+    "cabal": {
+      "version": "3.14.1.0",
+      "sha256": "4cdc837b23f59eb7b273dee886617dc28ea8e8ced7d89e276be2b8b95f3ba393"
+    }
+  }
+}
