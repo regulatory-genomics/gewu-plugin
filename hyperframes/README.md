@@ -24,23 +24,23 @@ the same versioned source and history.
 
 ## Requirements
 
-- GeWu with `webapp` views (this branch) and a browser-facing app origin.
-- Node.js >= 22, Chromium (chrome-headless-shell preferred) and FFmpeg/FFprobe,
-  installed on the GeWu host. Nothing is bundled; see `INSTALL.md`.
-- System fonts for video text, or a project that ships its own fonts via
-  `@font-face` (recommended for identical renders across machines).
+- GeWu with `webapp` views and a browser-facing app origin.
+- Install from the signed GeWu marketplace. The `gewu.runtime/v2` target ships
+  Node, Chromium, FFmpeg/FFprobe and fonts; the user needs no host Node,
+  Chromium, FFmpeg, browser cache or package manager.
+- Source/development installs only may use host dependencies. See `INSTALL.md`.
+- System fonts are not required: the runtime carries a private font database.
+  A project may still embed its own fonts via `@font-face` for identical output.
 
 ## Layout
 
 ```text
 plugin.json          manifest: resource scope, webapp Studio view, video view
-bin/hyperframes-gewu adapter entry (uses the packed runtime when present)
-engine/cli/          built adapter, CLI and Studio server (same commit)
+bin/hyperframes-gewu legacy adapter entry (new installs use runtime/bin/launch)
 web/                 built GeWu Studio host (native Studio + control bridge)
 registry/            pinned blocks/components for catalog.search/add
 tools.schema.json    the exact agent tool schemas
 skills/hyperframes/  the agent skill that teaches the production loop
-runtime-plan.json    external-only runtime provider (host dependencies)
 release.json         package descriptor for scripts/plugin-release.py
 ```
 

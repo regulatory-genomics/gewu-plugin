@@ -2,14 +2,15 @@
 import {once} from 'node:events';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdir,mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {mkdir,mkdtemp,readFile,rm,symlink,writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createServer as tlsServer} from 'node:tls';
 import {connect as tcpConnect} from 'node:net';
 
-export async function startCoworkFixture({realConfig,modelName,keep=false,settings={},installOnly=false,cleanPATH=false}={}) {
+export async function startCoworkFixture({realConfig,modelName,keep=false,settings={},installOnly=false,cleanPATH=false,installed}={}) {
   const home=await mkdtemp(join(process.env.GEWU_TEST_TMP ?? tmpdir(),'inkscape-'));
+  if(installed)await symlink(join(installed.home,'.gewu'),join(home,'.gewu'),'dir');
   const root=join(home,'workspace'); await mkdir(root);
   const requests=[],children=[]; let logs='',secureProxy;
   const listen=async(server)=>{server.listen(0,'127.0.0.1');await once(server,'listening');return server.address().port;};
@@ -43,7 +44,7 @@ export async function startCoworkFixture({realConfig,modelName,keep=false,settin
     const input=realConfig?JSON.parse(await readFile(realConfig,'utf8')):null;
     const preset=input?{model:modelName||input.model,endpoints:input.endpoints}:{model:'local/fixture',endpoints:{local:{base_url:`http://127.0.0.1:${model}/v1`,api_key:'test-only',models:{fixture:{provider:'openai-compatible'}}}}};
     await writeFile(config,JSON.stringify({...preset,
-      plugins:installOnly?{}:{inkscape:{package:process.env.GEWU_APP_PLUGIN,enabled:true,settings:{inkscapeExecutable:process.env.INKSCAPE_BIN,editorMode:'legacy',...settings}}}}),{mode:0o600});
+      plugins:installOnly?{}:{inkscape:{package:installed?'':process.env.GEWU_APP_PLUGIN,enabled:true,settings:installed?settings:{inkscapeExecutable:process.env.INKSCAPE_BIN,editorMode:'legacy',...settings}}}}),{mode:0o600});
     const ws=await reserve(),tcp=await reserve(),http=await reserve(),gui=await reserve();
     const start=(args)=>{
       const env={...process.env,HOME:home,GEWU_GUI_TOKEN:'',GEWU_SERVE_TOKEN:'',NO_PROXY:'127.0.0.1,localhost',no_proxy:'127.0.0.1,localhost'};

@@ -1,44 +1,38 @@
 # Install the GeWu Hyperframes plugin
 
-This plugin bundles **no** Node, Chromium or FFmpeg. Install them on the GeWu
-host first, then install the plugin.
+## 1. Install from the marketplace
 
-## 1. Host dependencies
-
-| Requirement | Version used in validation | Check |
-| --- | --- | --- |
-| Node.js | 24.15.0 (>= 22 required) | `node --version` |
-| Chromium / chrome-headless-shell | 155.0.8059.39 | `chromium --version` or set `chromePath` |
-| FFmpeg + FFprobe | 5.1.2 | `ffmpeg -version`, `ffprobe -version` |
-| Fonts | for on-screen text | project `@font-face`, or host fonts |
-
-Notes:
-
-- `chrome-headless-shell` is preferred (faster capture); a regular Chromium works.
-- `node` must be on the GeWu host's `PATH` — the adapter entry is a shell script
-  that execs `node`.
-- If `ffmpeg`/`chromium` are not on `PATH`, set the plugin settings
-  `ffmpegPath`, `ffprobePath`, `chromePath` to absolute paths.
-
-Ubuntu example (versions vary by distribution):
+Use a GeWu host that supports `gewu.release/v3` and app origins, then select
+Hyperframes in **Plugins → Marketplace → Install**. The signed release contains
+the matching Node, Chromium/chrome-headless-shell, FFmpeg/FFprobe, native
+modules and fonts. Do not install Node, Chromium or FFmpeg first; the host checks
+the OS/architecture and disk budget before downloading.
 
 ```sh
-sudo apt-get install -y ffmpeg fonts-noto-cjk
-# Chromium: distribution package, or
-npx @puppeteer/browsers install chrome-headless-shell@stable
-```
-
-## 2. Install the plugin
-
-```sh
-gewu plugin marketplace-install hyperframes --runtime external --executable "$(command -v node)"
+gewu plugin marketplace-install hyperframes --channel beta --version <version> --runtime bundled
 gewu plugin check hyperframes --probe --workspace <workspace> \
   --resource workspace:///my-video --resource-type hyperframes.project
 ```
 
-The external probe verifies Node >= 22 and that a Chromium and FFmpeg/FFprobe can
-be started. A missing dependency fails the probe with the reason instead of
-letting the first render fail.
+The installed runtime probe captures a real frame, encodes a short video with an
+audio track and validates it with FFprobe. A missing/foreign platform artifact
+is rejected before installation.
+
+## 2. Source / development installs only
+
+A source checkout can use host dependencies. This path is not the user-facing
+marketplace release.
+
+| Requirement | Check |
+| --- | --- |
+| Node.js >= 22 | `node --version` |
+| Chromium / chrome-headless-shell | `chromium --version` or set `chromePath` |
+| FFmpeg + FFprobe | `ffmpeg -version`, `ffprobe -version` |
+
+```sh
+gewu plugin marketplace-install hyperframes --version <legacy-version> \
+  --runtime external --executable "$(command -v node)"
+```
 
 ## 3. Point GeWu at a browser-facing application origin
 
@@ -81,6 +75,12 @@ gewu gui \
 ## 6. Verify an installation
 
 ```sh
+# full Studio journey against the installed generation and its own .gewu state
+GEWU_APP_PLUGIN="$HOME/.gewu/plugins/hyperframes/generations/<id>/package" \
+GEWU_INSTALLED_HOME="$HOME" \
+GEWU_APP_SPEC=<plugin>/tests/gui.spec.mjs \
+  npm --prefix <gewu>/gewu-gui/tests/browser test -- application-plugin.spec.mjs
+
 # protocol: activate, create, inspect, invalid path, cancel, deactivate
 python3 <gewu>/scripts/plugin-conformance.py \
   --package <package> --settings settings.json --workspace <ws> \

@@ -3,9 +3,12 @@ import {join} from 'node:path';
 import {startCoworkFixture} from './cowork-fixture.mjs';
 
 export function register({test, expect}) {
-  test('a human gesture and a real GeWu agent edit share history and native previews', async ({page}, info) => {
+  test('the installed Web editor and a real GeWu agent edit share history and previews', async ({page}, info) => {
     test.setTimeout(120000);
-    const fixture = await startCoworkFixture();
+    const installed = process.env.GEWU_INSTALLED_HOME
+      ? { home: process.env.GEWU_INSTALLED_HOME }
+      : undefined;
+    const fixture = await startCoworkFixture({ installed });
     try {
       await mkdir(join(fixture.root,'figure'));
       for (const [i,color] of ['#204e91','#f09812','#3b8252','#412763','#48141b','#0099aa'].entries()) {

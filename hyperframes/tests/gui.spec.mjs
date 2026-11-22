@@ -3,11 +3,15 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export function register({ test, expect, startFixture }) {
-  test("native Hyperframes Studio opens in GeWu, plays and seeks the shared video", async ({
+  test("installed Hyperframes Studio opens in GeWu, plays, edits and exports the shared video", async ({
     page,
   }) => {
     test.setTimeout(600000);
-    const fixture = await startFixture({
+    const installed = process.env.GEWU_INSTALLED_HOME
+      ? { home: process.env.GEWU_INSTALLED_HOME, package: process.env.GEWU_INSTALLED_PACKAGE }
+      : undefined;
+    if (installed && !installed.package) throw Error("Set GEWU_INSTALLED_PACKAGE with GEWU_INSTALLED_HOME");
+    const fixture = await startFixture(installed ? { installed, appOrigins: true } : {
       settings: {
         chromePath: process.env.GEWU_HYPERFRAMES_CHROME,
         ffmpegPath: process.env.GEWU_HYPERFRAMES_FFMPEG,

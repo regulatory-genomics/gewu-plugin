@@ -57,6 +57,29 @@ export class PluginServer {
       );
       return c.json({ received: true });
     });
+    // Studio probes these optional host features on load. GeWu owns the
+    // project and views, so neither the desktop handoff nor local share exists.
+    this.app.get("/api/open-in-desktop", (c) =>
+      c.json({
+        available: false,
+        handoff: false,
+        downloadUrl: null,
+        os: "linux",
+        installed: false,
+      }),
+    );
+    this.app.post("/api/open-in-desktop", (c) =>
+      c.json({ opened: false, reason: "handoff-unavailable", downloadUrl: null }),
+    );
+    this.app.all("/api/share/*", (c) =>
+      c.json(
+        {
+          code: "unavailable",
+          message: "Local sharing is unavailable in the GeWu Studio host.",
+        },
+        501,
+      ),
+    );
     this.app.use(async (c, next) => {
       const p = c.req.path;
       if (c.req.method === "POST" && p.endsWith("/render"))
@@ -84,6 +107,8 @@ export class PluginServer {
         p.startsWith("/api/fonts") ||
         p === "/api/registry/blocks" ||
         p === "/api/environment/ffmpeg" ||
+        p === "/api/open-in-desktop" ||
+        p.startsWith("/api/share/") ||
         p === "/__hyperframes_config";
       if (!allowed) return c.text("This endpoint is not part of the bound project", 404);
       await next();
