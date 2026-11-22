@@ -1,9 +1,40 @@
 import importlib.util
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+
+class NssClosureTests(unittest.TestCase):
+    def test_dlopen_nss_modules_are_staged_and_initialize_without_host_fallback(self):
+        source = Path(__file__).resolve().parents[2] / "scripts/stage-linux-libraries.py"
+        nss = Path("/lib64/libnss3.so")
+        if not nss.exists():
+            self.skipTest("needs build-host NSS")
+        modules = ("libsoftokn3.so", "libfreeblpriv3.so", "libfreebl3.so", "libnssdbm3.so")
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "libs"
+            result = subprocess.run(
+                [sys.executable, str(source), "--out", str(out),
+                 *[arg for module in (*modules, "libnss3.so") for arg in ("--dlopen", str(nss.parent / module))], str(nss)],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = json.loads((out / "inputs.json").read_text())
+            self.assertTrue(set(modules).issubset(entry["file"] for entry in manifest))
+            dependencies = subprocess.check_output(["ldd", str(nss.parent / "libsoftokn3.so")], text=True)
+            for line in dependencies.splitlines():
+                if "libsqlite3.so.0 =>" in line:
+                    self.assertIn("libsqlite3.so.0", [entry["file"] for entry in manifest])
+            check = subprocess.run(
+                [sys.executable, "-c", "import ctypes; nss=ctypes.CDLL('libnss3.so'); assert nss.NSS_NoDB_Init(None)==0; nss.PK11_GetInternalKeySlot.restype=ctypes.c_void_p; slot=nss.PK11_GetInternalKeySlot(); assert slot; nss.PK11_FreeSlot.argtypes=[ctypes.c_void_p]; nss.PK11_FreeSlot(slot); assert nss.NSS_Shutdown()==0"],
+                env={**os.environ, "LD_LIBRARY_PATH": str(out)}, text=True, capture_output=True,
+            )
+            self.assertEqual(check.returncode, 0, check.stderr)
 
 
 class FontCacheTests(unittest.TestCase):

@@ -237,9 +237,9 @@ class Adapter:
 
     def ensure_backend(self):
         with self.backend_lock:
-            if self.backend is None:
+            if self.backend is None or not self.backend.started:
                 try:
-                    backend = self.backend_factory(self.settings)
+                    backend = self.backend or self.backend_factory(self.settings)
                     backend.start()
                 except backend_module.BrowserError:
                     raise
@@ -249,6 +249,11 @@ class Adapter:
                         "Chromium could not start; check the packed runtime and browser installation",
                     ) from error
                 self.backend = backend
+                with self.lock:
+                    self.focused = None
+                    self.last_screenshot = None
+                    self.last_screenshot_tab = None
+                    self.last_screenshot_generation = None
             return self.backend
 
     def call(self, tool: str, args: dict, context: dict, control) -> dict:
@@ -528,7 +533,7 @@ class Adapter:
         with self.lock:
             base["mode"] = self.settings.get("mode")
             base["takeover"] = self.takeover
-            base["focusedTabId"] = self.focused or base.get("focusedTabId")
+            base["focusedTabId"] = self.focused if any(tab["id"] == self.focused for tab in base["tabs"]) else base.get("focusedTabId")
             base["lastAction"] = self.last_action
             base["activeCalls"] = sorted(call for call in self.active if call != exclude)
         return base
@@ -538,7 +543,7 @@ class Adapter:
     def preview_state(self) -> dict:
         data = self.state_data()
         with self.lock:
-            data["lastScreenshot"] = self.last_screenshot
+            data["lastScreenshot"] = self.last_screenshot if data["connected"] else None
             data["lastScreenshotTab"] = self.last_screenshot_tab
             data["lastScreenshotGeneration"] = self.last_screenshot_generation
         return {"ok": True, "data": data}

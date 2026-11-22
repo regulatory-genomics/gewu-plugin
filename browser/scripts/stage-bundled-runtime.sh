@@ -65,7 +65,12 @@ if [[ ! -x "$browser_path" ]]; then
     echo "Chromium executable is missing: $browser_path" >&2
     exit 2
 fi
-python3 "$here/../scripts/stage-linux-libraries.py" --out "$out/chromium-libs" "$browser_path"
+nss=$(ldd "$browser_path" | awk '$1 == "libnss3.so" {print $3}')
+[[ -f "$nss" ]] || { echo "NSS build input is missing" >&2; exit 2; }
+nss_dir=$(dirname "$nss")
+python3 "$here/../scripts/stage-linux-libraries.py" --out "$out/chromium-libs" \
+    --dlopen "$nss_dir/libsoftokn3.so" --dlopen "$nss_dir/libfreeblpriv3.so" \
+    --dlopen "$nss_dir/libfreebl3.so" --dlopen "$nss_dir/libnssdbm3.so" "$browser_path"
 python3 "$here/../scripts/stage-fonts.py" --out "$out/fonts" --license "$here/../assets/DejaVu-LICENSE.txt"
 
 cat > "$out/bin/python" <<'EOF'
