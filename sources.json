@@ -21,6 +21,13 @@
       "installationGuide": "./releases/inkscape/INSTALL.md",
       "runtimeRecipe": "./releases/inkscape/runtime/README.md",
       "originalSourceCommit": "a854afd4ddd7b127f3673264b6ba0e72ada6992c"
+    },
+    "gewu-browser-0.1.4": {
+      "application": "./browser",
+      "plugin": "./browser/plugin",
+      "runtimeRecipe": "./browser/scripts/stage.py",
+      "installationGuide": "./browser/INSTALL-0.1.4.md",
+      "originalSourceCommit": "97a4e985365ce5172895dc47d5ce0cf05ebade85"
     }
   },
   "plugins": {
@@ -29,7 +36,8 @@
       "application": "./browser",
       "plugin": "./browser/plugin",
       "runtimeRecipe": "./browser/runtime",
-      "buildScript": "./browser/scripts/stage-bundled-runtime.sh"
+      "buildScript": "./browser/scripts/stage-bundled-runtime.sh",
+      "installationGuide": "./browser/INSTALL-0.1.4.md"
     },
     "paper": {
       "version": "0.3.4",
@@ -37,7 +45,8 @@
       "plugin": "./paper",
       "applicationCommit": "e0094d733910200d122f39faa5cc987b2c87983e",
       "runtimeRecipe": "./paper/runtime/build.py",
-      "buildScript": "./paper/package.py"
+      "buildScript": "./paper/package.py",
+      "installationGuide": "./paper/INSTALL.md"
     },
     "manimble": {
       "version": "0.2.3",
@@ -53,7 +62,8 @@
       "application": "https://gitlab.com/inkscape/inkscape",
       "plugin": "./inkscape/plugins/gewu",
       "runtimeRecipe": "./inkscape/runtime/build.py",
-      "buildScript": "./inkscape/plugins/gewu/package.py"
+      "buildScript": "./inkscape/plugins/gewu/package.py",
+      "installationGuide": "./inkscape/INSTALL.md"
     },
     "hyperframes": {
       "version": "0.1.2",

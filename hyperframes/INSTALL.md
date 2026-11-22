@@ -1,106 +1,116 @@
-# Install the GeWu Hyperframes plugin
+# Install HyperFrames 0.1.2 for GeWu
 
-## 1. Install from the marketplace
+Prebuilt install (default) includes Node, Chromium/chrome-headless-shell,
+FFmpeg/FFprobe, native modules and fonts. The rest is the **manual source
+fallback**; it does not bypass Host compatibility or app-origin requirements.
 
-Use a GeWu host that supports `gewu.release/v3` and app origins, then select
-Hyperframes in **Plugins → Marketplace → Install**. The signed release contains
-the matching Node, Chromium/chrome-headless-shell, FFmpeg/FFprobe, native
-modules and fonts. Do not install Node, Chromium or FFmpeg first; the host checks
-the OS/architecture and disk budget before downloading.
+## Prebuilt (recommended)
 
 ```sh
-gewu plugin marketplace-install hyperframes --channel beta --version <version> --runtime bundled
-gewu plugin check hyperframes --probe --workspace <workspace> \
+gewu plugin marketplace-install hyperframes --version 0.1.2 --channel beta --runtime bundled
+gewu plugin check hyperframes --version 0.1.2 --probe \
+  --workspace /absolute/path/to/workspace \
   --resource workspace:///my-video --resource-type hyperframes.project
 ```
 
-The installed runtime probe captures a real frame, encodes a short video with an
-audio track and validates it with FFprobe. A missing/foreign platform artifact
-is rejected before installation.
+Studio views also need an app origin configured by the administrator. Without
+it, agent tools still work but opening the Studio view fails with
+`APP_ORIGIN_NOT_CONFIGURED`; source installation cannot fix that.
 
-## 2. Source / development installs only
+## Source fallback: platform status
 
-A source checkout can use host dependencies. This path is not the user-facing
-marketplace release.
+- Verified: Linux x86_64 (prebuilt runtime).
+- This source path is **not verified** on any platform in this release. It needs
+  Node ≥ 22, Bun (the adapter build script is a Bun script), Chromium, FFmpeg and
+  FFprobe for the target architecture, plus a full HyperFrames monorepo checkout.
 
-| Requirement | Check |
-| --- | --- |
-| Node.js >= 22 | `node --version` |
-| Chromium / chrome-headless-shell | `chromium --version` or set `chromePath` |
-| FFmpeg + FFprobe | `ffmpeg -version`, `ffprobe -version` |
+## Pinned sources
 
-```sh
-gewu plugin marketplace-install hyperframes --version <legacy-version> \
-  --runtime external --executable "$(command -v node)"
-```
-
-## 3. Point GeWu at a browser-facing application origin
-
-Studio runs from its own origin, framed by GeWu. Both origins must be
-configured; without them, agent tools still work but opening the Studio view
-fails with `APP_ORIGIN_NOT_CONFIGURED`.
+- Adapter: `d19405783c37ee5e2228b215236c5bfb334101f3` (or newer, only after the
+  source-sync check below passes), directory `hyperframes/`
+- Engine: the HyperFrames monorepo pinned by `hyperframes/SOURCE.json`
+  (`repository`, `sourceCommit`, `pluginPath`). The upstream repository may be
+  private or moved; use the engine snapshot referenced by `SOURCE.json` in the
+  same pinned adapter revision. If it is not reachable, report the blocker.
+- Adapter manifest check:
 
 ```sh
-gewu gui \
-  --public-origin https://gewu.example.com \
-  --plugin-app-origin-template 'https://{view}.apps.gewu.example.com'
+cd /path/to/gewu-plugin-checkout
+git checkout d19405783c37ee5e2228b215236c5bfb334101f3
+python3 - <<'PY'
+import json
+m = json.load(open('hyperframes/plugin.json'))
+assert m['id'] == 'hyperframes' and m['version'] == '0.1.2', m
+src = json.load(open('hyperframes/SOURCE.json'))
+print('source manifest:', m['id'], m['version'], 'engine:', src['sourceCommit'])
+PY
 ```
 
-- Local development: `--public-origin http://gui.gewu.localhost:8430 \
-  --plugin-app-origin-template 'http://{view}.apps.gewu.localhost:8430'`.
-- `{view}` must be the whole first hostname label. Remote deployments require
-  HTTPS and same-site origins (`apps.<site>` under the GUI's site).
-- Wildcard DNS/TLS must resolve `*.<label>.apps.<site>` to the GeWu GUI. Any
-  tunnel or reverse proxy in front of GeWu must forward the browser `Host`
-  unchanged and support streaming (SSE) and `Range`.
-
-## 4. Optional settings
-
-| Setting | Purpose |
-| --- | --- |
-| `chromePath` | Chromium/chrome-headless-shell used for checks, frames and rendering |
-| `ffmpegPath` | FFmpeg binary |
-| `ffprobePath` | FFprobe binary |
-
-## 5. Use it
-
-1. Create a project directory in the workspace and open it from **Plugins →
-   Hyperframes → Open…**, or let the agent call `project.create`.
-2. The Studio view opens in Preview. Edit by hand; ask the agent in the same
-   conversation for changes. Both land in the same source and history.
-3. Export from Studio's Export button (or the agent's `render`). The render
-   status panel shows progress, cancels the worker group, and offers the finished
-   video for playback and download.
-
-## 6. Verify an installation
+## Prepare the engine checkout
 
 ```sh
-# full Studio journey against the installed generation and its own .gewu state
-GEWU_APP_PLUGIN="$HOME/.gewu/plugins/hyperframes/generations/<id>/package" \
-GEWU_INSTALLED_HOME="$HOME" \
-GEWU_APP_SPEC=<plugin>/tests/gui.spec.mjs \
-  npm --prefix <gewu>/gewu-gui/tests/browser test -- application-plugin.spec.mjs
-
-# protocol: activate, create, inspect, invalid path, cancel, deactivate
-python3 <gewu>/scripts/plugin-conformance.py \
-  --package <package> --settings settings.json --workspace <ws> \
-  --scenario <plugin>/fixtures/contract.json --schema-root <gewu>/gewu-protocol/schema
-
-# native bridge: cross-origin frame, versions, Range, SSE, revocation
-npm --prefix <gewu>/gewu-gui/tests/browser test -- plugin-webapp.spec.mjs
-
-# full Studio journey (real Studio, agent tools, drag/undo, frame, render, download)
-GEWU_APP_PLUGIN=<package> GEWU_APP_SPEC=<plugin>/tests/gui.spec.mjs \
-GEWU_HYPERFRAMES_CHROME=/path/to/chrome-headless-shell \
-GEWU_HYPERFRAMES_FFMPEG=/path/to/ffmpeg GEWU_HYPERFRAMES_FFPROBE=/path/to/ffprobe \
-  npm --prefix <gewu>/gewu-gui/tests/browser test -- application-plugin.spec.mjs
+ENGINE="$HOME/gewu-hyperframes-0.1.2-engine"
+git clone <repository from SOURCE.json> "$ENGINE"
+git -C "$ENGINE" checkout <sourceCommit from SOURCE.json>
 ```
 
-## Known limits of this release
+Sync this repository's adapter into the monorepo path declared by
+`SOURCE.json` (`pluginPath`) and verify with the canonical check:
 
-- Linux x86_64 glibc, desktop Chromium, 1920×1080 at 30 fps by default.
-- MP4 (H.264/AAC) and WebM export are validated; other upstream formats are not exposed.
-- One render per project at a time; no cloud rendering, TTS or generative media.
-- Studio's Export routes through GeWu's render lifecycle; a direct POST to the
-  native render route is refused so cancellation/ownership stay correct.
-- Text rendering depends on host fonts unless the project embeds them.
+```sh
+python3 /path/to/gewu-plugin-checkout/scripts/check-source-sync.py \
+  --sources /path/to/gewu-plugin-checkout/sources.json \
+  --hyperframes-root "$ENGINE" --check
+```
+
+Host dependencies, with absolute paths recorded for settings:
+
+```sh
+node --version            # must be >= 22
+chromium --version        # or a chrome-headless-shell path
+ffmpeg -version
+ffprobe -version
+bun --version             # required by plugins/gewu/build.ts
+```
+
+Missing native modules, Chromium or FFmpeg is a blocker; pip cannot supply them.
+
+## Build and stage the package
+
+```sh
+cd "$ENGINE"
+bun run plugins/gewu/build.ts
+python3 /path/to/GeWu/scripts/plugin-release.py \
+  --descriptor dist/gewu-hyperframes/release.json \
+  --source-root dist/gewu-hyperframes \
+  --out "$HOME/gewu-hyperframes-0.1.2-source/package"
+gewu plugin install "$HOME/gewu-hyperframes-0.1.2-source/package"
+```
+
+Configure absolute host paths in the plugin settings:
+
+```json
+{
+  "chromePath": "/absolute/path/to/chrome-headless-shell",
+  "ffmpegPath": "/absolute/path/to/ffmpeg",
+  "ffprobePath": "/absolute/path/to/ffprobe"
+}
+```
+
+## Check and complete one real operation
+
+```sh
+gewu plugin check hyperframes --version 0.1.2 --probe \
+  --workspace /absolute/path/to/workspace \
+  --resource workspace:///my-video --resource-type hyperframes.project
+```
+
+Restart GeWu, create or open a project, render a short video with an audio track
+and verify it with `ffprobe`. A lifecycle-only probe is not acceptance.
+
+## Report
+
+Record adapter and engine revisions, Node/Bun/Chromium/FFmpeg versions, the
+source-sync result, probe output and the rendered video check. If the engine
+snapshot or a native dependency is unavailable, report that blocker instead of
+installing a newer adapter.
