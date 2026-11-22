@@ -4,9 +4,12 @@ dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -d "$dir/lib" ]; then
   export PYTHONPATH="$dir/lib"
 fi
-# A packed runtime ships its own interpreter; legacy packages use PATH.
+# A bundled release carries its interpreter under env/ and the host launches
+# runtime/bin/launch. This fallback serves legacy local packages.
 python=python3
-if [ -n "${GEWU_RUNTIME_ROOT:-}" ] && [ -x "$GEWU_RUNTIME_ROOT/bin/python3" ]; then
-  python="$GEWU_RUNTIME_ROOT/bin/python3"
+if [ -n "${GEWU_RUNTIME_ROOT:-}" ]; then
+  for candidate in "$GEWU_RUNTIME_ROOT/env/bin/python" "$GEWU_RUNTIME_ROOT/bin/python3" "$GEWU_RUNTIME_ROOT/bin/python"; do
+    if [ -x "$candidate" ]; then python="$candidate"; break; fi
+  done
 fi
 exec "$python" "$dir/adapter.py"

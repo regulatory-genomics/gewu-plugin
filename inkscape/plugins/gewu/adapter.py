@@ -47,12 +47,15 @@ class Adapter:
             self.root=Path(params['workspaceRoot']).resolve(); ref=params.get('bindingResource') or {}
             if ref.get('type')!='inkscape.document': raise Failure('INVALID_PATH','Open an inkscape.document resource')
             binding=self.from_uri(ref['uri']); settings=params.get('settings',{})
-            if settings.get('editorMode','native')=='native' and params.get('instanceId') and 'plugin-websocket' not in os.environ.get('GEWU_PLUGIN_HOST_FEATURES','').split():
+            headless=os.environ.get('GEWU_INKSCAPE_HEADLESS')=='1'
+            native_mode=not headless and settings.get('editorMode','native')=='native'
+            if native_mode and params.get('instanceId') and 'plugin-websocket' not in os.environ.get('GEWU_PLUGIN_HOST_FEATURES','').split():
                 raise Failure('HOST_UPGRADE_REQUIRED','Upgrade GeWu to the native WebSocket-enabled host before opening Inkscape 0.2; use editorMode=legacy with an older host')
             self.live_directory=settings.get('nativeSessionDirectory')
             self.live_remote=settings.get('nativeRemote')
-            self.doc=Document(self.root,binding,Engine(settings.get('inkscapeExecutable'),settings.get('timeoutSeconds',30)))
-            if settings.get('editorMode','native')=='native':
+            executable=(Path(os.environ['GEWU_RUNTIME_ROOT'])/'bin/inkscape') if headless else settings.get('inkscapeExecutable')
+            self.doc=Document(self.root,binding,Engine(executable,settings.get('timeoutSeconds',30)))
+            if native_mode:
                 from desktop.session import NativeSession
                 self.native=NativeSession(self.doc,settings)
             tools=NATIVE_TOOLS if self.native else TOOLS

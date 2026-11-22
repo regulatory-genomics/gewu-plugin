@@ -35,7 +35,8 @@
       "version": "0.3.1",
       "application": "https://github.com/regulatory-genomics/paper",
       "plugin": "./paper",
-      "runtimeRecipe": "./paper/runtime-plan.json",
+      "applicationCommit": "e0094d733910200d122f39faa5cc987b2c87983e",
+      "runtimeRecipe": "./paper/runtime/build.py",
       "buildScript": "./paper/package.py"
     },
     "manimble": {
@@ -43,7 +44,7 @@
       "upstream": "https://github.com/pachterlab/Manimble",
       "application": "./manimble/engine",
       "plugin": "./manimble",
-      "runtimeRecipe": "./manimble/runtime-plan.json",
+      "runtimeRecipe": "./manimble/pixi.lock",
       "installationGuide": "./manimble/INSTALL.md",
       "buildScript": "./manimble/build-release.py"
     },
@@ -51,14 +52,14 @@
       "version": "0.2.0",
       "application": "https://gitlab.com/inkscape/inkscape",
       "plugin": "./inkscape/plugins/gewu",
-      "runtimeRecipe": "./inkscape/runtime-linux-x86_64.json",
+      "runtimeRecipe": "./inkscape/runtime/build.py",
       "buildScript": "./inkscape/plugins/gewu/package.py"
     },
     "hyperframes": {
       "version": "0.1.0",
       "application": "https://github.com/heygen-com/hyperframes",
       "plugin": "./hyperframes",
-      "runtimeRecipe": "./hyperframes/runtime-plan.json",
+      "runtimeRecipe": "./hyperframes/runtime/build.py",
       "installationGuide": "./hyperframes/INSTALL.md",
       "originalSourceCommit": "c96e5d4dc39a83c221eb433956eaaa8ee42750cb"
     }

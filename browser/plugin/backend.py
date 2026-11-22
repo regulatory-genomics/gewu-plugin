@@ -6,6 +6,7 @@ API is not thread-safe, and the adapter runs tool calls on a worker pool.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 import time
@@ -227,8 +228,12 @@ class PlaywrightBackend:
                 for page in self._context.pages:
                     self._adopt(page)
         else:
+            packed = os.environ.get("GEWU_BROWSER_FULL_CHROMIUM") == "1"
+            bundled_options = {"executable_path": _playwright.chromium.executable_path,
+                               "chromium_sandbox": True} if packed else {}
             self._browser = _playwright.chromium.launch(
                 headless=self.headless,
+                **bundled_options,
                 args=[
                     "--disable-dev-shm-usage",
                     "--no-first-run",

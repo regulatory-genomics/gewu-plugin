@@ -1,0 +1,22 @@
+[
+  {
+    "id": "paper",
+    "version": "0.3.1",
+    "fixture": "fixtures/paper",
+    "resource": "workspace:///manuscript",
+    "resourceType": "paper.project",
+    "package": "build/paper/paper-0.3.1.package.json",
+    "runtime": "build/paper/paper-0.3.1.runtime.json",
+    "installedBytesUpperBound": 400000000
+  },
+  {
+    "id": "manimble",
+    "version": "0.2.1",
+    "fixture": "fixtures/manimble",
+    "resource": "workspace:///deck",
+    "resourceType": "manimble.deck",
+    "package": "build/manimble/manimble-0.2.1.package.json",
+    "runtime": "build/manimble/manimble-0.2.1.runtime.json",
+    "installedBytesUpperBound": 1300000000
+  }
+]

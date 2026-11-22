@@ -4,4 +4,12 @@ dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 if [ -d "$dir/lib" ]; then
   export PYTHONPATH="$dir/lib"
 fi
-exec python3 "$dir/adapter.py"
+# The host normally starts runtime/bin/launch. This legacy entry point must
+# still prefer the interpreter supplied by a selected packed runtime.
+python=python3
+if [ -n "${GEWU_RUNTIME_ROOT:-}" ]; then
+  for candidate in "$GEWU_RUNTIME_ROOT/python/bin/python3" "$GEWU_RUNTIME_ROOT/bin/python3" "$GEWU_RUNTIME_ROOT/bin/python"; do
+    if [ -x "$candidate" ]; then python="$candidate"; break; fi
+  done
+fi
+exec "$python" "$dir/adapter.py"

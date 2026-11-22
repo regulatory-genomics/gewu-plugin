@@ -1,0 +1,13 @@
+{
+  "appImage": {
+    "version": "1.4.4",
+    "url": "https://inkscape.org/gallery/item/59506/Inkscape-1.4.4.AppImage",
+    "sha256": "d217fe05c92faaed5c3af46856b6299c98933dc722819cb5bc2ca052c5522166"
+  },
+  "font": {
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf",
+    "sha256": "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b",
+    "licenseUrl": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE",
+    "licenseSha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+  }
+}

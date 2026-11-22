@@ -97,3 +97,21 @@ changing the environment.
 - Adapter, engine snapshot and this guide:
   <https://github.com/regulatory-genomics/gewu-plugin/tree/main/manimble>
 - Engine snapshot manifest: [`engine/SOURCE.json`](engine/SOURCE.json)
+# Installing a prebuilt Manimble release
+
+On a supported GeWu host, choose the bundled release in Marketplace. GeWu
+downloads the signed artifacts and restores the pinned Pixi pack locally.
+The bundled release does not require a separately installed Python, Conda or
+Pixi. A successful install checks both rendering and PowerPoint export.
+
+Build inputs are fixed by `pixi.toml`, `pixi.lock` and the `v0.7.12` packer
+and unpacker digests in `build-release.py`. For a Linux host, build with:
+
+```sh
+python3 manimble/build-release.py --target gewu-linux \
+  --pixi-pack /path/to/pixi-pack --pixi-unpack /path/to/pixi-unpack \
+  --gewu-scripts /path/to/GeWu/scripts --out /tmp/manimble-release
+```
+
+The following managed/external instructions apply to legacy releases and
+development setups. They are not prerequisites for the new bundled release.

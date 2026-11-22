@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync, readFileSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join, resolve, relative, sep } from "node:path";
 import Ajv from "ajv";
 import { StudioProject } from "./project.js";
@@ -56,24 +56,32 @@ export class Adapter {
   constructor(
     readonly packageRoot: string,
     readonly emit: (id: string, event: Record<string, unknown>) => void = () => {},
+    readonly runtimeRoot?: string,
   ) {}
+  private engine(name: string) {
+    return join(this.runtimeRoot ?? this.packageRoot, "engine/cli", name);
+  }
   private runner(requestId: string, callId: string) {
-    const runner = new JobRunner(
-      join(this.packageRoot, "engine/cli/gewuWorker.js"),
-      process.execPath,
-      (message) => this.emit(requestId, { type: "progress", callId, message }),
+    const runner = new JobRunner(this.engine("gewuWorker.js"), process.execPath, (message) =>
+      this.emit(requestId, { type: "progress", callId, message }),
     );
     this.runners.add(runner);
     return runner;
   }
   /**
-   * The packed runtime is gone: Node, Chromium and FFmpeg come from the host.
-   * Explicit settings win; otherwise the CLI resolves them from PATH.
+   * New bundled releases pin executable paths. Legacy local packages can
+   * still resolve explicit settings or executables from the host.
    */
   private configureDependencies(configured: (name: string) => string | undefined): void {
-    const chrome = configured("chromePath");
-    const ffmpeg = configured("ffmpegPath");
-    const ffprobe = configured("ffprobePath");
+    const chrome = this.runtimeRoot
+      ? join(this.runtimeRoot, "chrome/chrome-headless-shell")
+      : configured("chromePath");
+    const ffmpeg = this.runtimeRoot
+      ? join(this.runtimeRoot, "bin/ffmpeg")
+      : configured("ffmpegPath");
+    const ffprobe = this.runtimeRoot
+      ? join(this.runtimeRoot, "bin/ffprobe")
+      : configured("ffprobePath");
     for (const [label, value] of [
       ["chromePath", chrome],
       ["ffmpegPath", ffmpeg],
@@ -161,7 +169,7 @@ export class Adapter {
       };
       this.server = new PluginServer(this.project);
       await this.server.start();
-      this.video = new VideoOperations(this.project, join(this.packageRoot, "engine/cli/cli.js"));
+      this.video = new VideoOperations(this.project, this.engine("cli.js"));
       return {
         tools: definitions,
         serviceEndpoints: [

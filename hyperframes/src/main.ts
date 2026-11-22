@@ -5,6 +5,7 @@ import { serveStdio } from "./stdio.js";
 const adapter = new Adapter(
   process.env.GEWU_PLUGIN_ROOT ?? resolve(import.meta.dirname, "../.."),
   (id, event) => process.stdout.write(JSON.stringify({ id, type: "event", event }) + "\n"),
+  process.env.GEWU_HYPERFRAMES_PACKED === "1" ? process.env.GEWU_RUNTIME_ROOT : undefined,
 );
 process.on("SIGTERM", () => void adapter.close().finally(() => process.exit(0)));
 process.on("SIGINT", () => void adapter.close().finally(() => process.exit(0)));

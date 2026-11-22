@@ -12,9 +12,15 @@ with sync_playwright() as p:
     executable = p.chromium.executable_path
     if not executable or not os.path.exists(executable):
         raise SystemExit(f"chromium executable is missing: {executable}")
-    browser = p.chromium.launch(headless=True, timeout=20_000)
+    browser = p.chromium.launch(headless=True, executable_path=executable,
+                                chromium_sandbox=True, timeout=20_000)
     try:
-        browser.new_page().goto("about:blank", timeout=5_000)
+        page = browser.new_page()
+        page.goto("data:text/html,<input aria-label='test'><button>Apply</button>", timeout=5_000)
+        page.get_by_label("test").fill("GeWu")
+        page.get_by_role("button", name="Apply").click()
+        if page.get_by_label("test").input_value() != "GeWu" or not page.screenshot().startswith(b"\x89PNG\r\n\x1a\n"):
+            raise SystemExit("browser did not complete input and screenshot smoke")
     finally:
         browser.close()
 print(f"ok python={sys.version.split()[0]} chromium={executable}")

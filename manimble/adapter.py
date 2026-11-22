@@ -53,8 +53,8 @@ def failure(error, resources=(), **extra):
 def engine_environment(root, python):
     """The packed runtime keeps its shared libraries and helpers under root."""
     env = {**os.environ, "PYTHONPATH": str(root), "MANIMBLE_PYTHON": str(python), "PYTHONDONTWRITEBYTECODE": "1"}
-    env["PATH"] = str(root / "bin") + os.pathsep + env.get("PATH", "")
-    library_path = str(root / "lib")
+    env["PATH"] = str(python.parent) + os.pathsep + env.get("PATH", "")
+    library_path = str(python.parent.parent / "lib")
     if env.get("LD_LIBRARY_PATH"):
         library_path += os.pathsep + env["LD_LIBRARY_PATH"]
     env["LD_LIBRARY_PATH"] = library_path
@@ -194,7 +194,9 @@ class Adapter:
         runtime = os.environ.get("GEWU_RUNTIME_ROOT")
         if runtime:
             runtime_root = Path(runtime).resolve()
-            python = runtime_root / "bin" / "python"
+            python = runtime_root / "env/bin/python"
+            if not python.is_file():
+                python = runtime_root / "bin" / "python"
             if not python.is_file():
                 python = runtime_root / "bin" / "python3"
             # The engine is plugin code and ships in the package. A packed

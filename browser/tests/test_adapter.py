@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 import time
@@ -375,7 +376,8 @@ class ContractTest(unittest.TestCase):
             import jsonschema
         except ImportError:
             self.skipTest("jsonschema is not installed")
-        schema_path = Path(__file__).resolve().parents[2] / "GeWu" / "gewu-protocol" / "schema" / "plugin.v1.schema.json"
+        gewu = Path(os.environ.get("GEWU_ROOT", Path(__file__).resolve().parents[2] / "GeWu"))
+        schema_path = gewu / "gewu-protocol" / "schema" / "plugin.v1.schema.json"
         if not schema_path.is_file():
             self.skipTest("GeWu protocol schema is not available")
         schema = json.loads(schema_path.read_text())

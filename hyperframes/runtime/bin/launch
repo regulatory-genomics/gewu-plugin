@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+export PATH="$GEWU_RUNTIME_ROOT/bin:/usr/bin:/bin"
+if [ -f "$GEWU_RUNTIME_ROOT/fonts/fonts.conf" ]; then
+  export FONTCONFIG_FILE="$GEWU_RUNTIME_ROOT/fonts/fonts.conf" XDG_DATA_HOME="$GEWU_RUNTIME_ROOT"
+fi
+if [ -d "$GEWU_RUNTIME_ROOT/linux-libs" ]; then export LD_LIBRARY_PATH="$GEWU_RUNTIME_ROOT/linux-libs"; fi
+export GEWU_HYPERFRAMES_PACKED=1 HYPERFRAMES_NO_TELEMETRY=1 DO_NOT_TRACK=1
+exec "$GEWU_RUNTIME_ROOT/bin/node" "$GEWU_RUNTIME_ROOT/engine/cli/gewuAdapter.js"

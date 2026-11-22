@@ -1,0 +1,20 @@
+[
+  {
+    "id": "paper",
+    "version": "0.3.1",
+    "fixture": "fixtures/paper",
+    "resource": "workspace:///manuscript",
+    "resourceType": "paper.project",
+    "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "runtimeSha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  {
+    "id": "manimble",
+    "version": "0.2.1",
+    "fixture": "fixtures/manimble",
+    "resource": "workspace:///deck",
+    "resourceType": "manimble.deck",
+    "packageSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "runtimeSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  }
+]

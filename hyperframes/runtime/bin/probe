@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+root=$GEWU_RUNTIME_ROOT
+export PATH="$root/bin:/usr/bin:/bin"
+if [ -f "$root/fonts/fonts.conf" ]; then
+  export FONTCONFIG_FILE="$root/fonts/fonts.conf" XDG_DATA_HOME="$root"
+fi
+if [ -d "$root/linux-libs" ]; then export LD_LIBRARY_PATH="$root/linux-libs"; fi
+export HYPERFRAMES_NO_TELEMETRY=1 DO_NOT_TRACK=1
+export HYPERFRAMES_BROWSER_PATH="$root/chrome/chrome-headless-shell"
+export PRODUCER_HEADLESS_SHELL_PATH="$HYPERFRAMES_BROWSER_PATH"
+export HYPERFRAMES_FFMPEG_PATH="$root/bin/ffmpeg" HYPERFRAMES_FFPROBE_PATH="$root/bin/ffprobe"
+exec "$root/bin/node" "$root/smoke.mjs"

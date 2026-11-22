@@ -39,30 +39,35 @@ cp -aL "$python_root/." "$out/python/"
     --target "$out/site-packages" --index-url "${GEWU_BROWSER_PYPI_INDEX:-https://pypi.org/simple}" \
     "playwright==1.59.0"
 
-revision=$("$out/python/bin/python3" -m playwright install --dry-run chromium 2>/dev/null \
-    | sed -n 's/.*(playwright chromium v\([0-9]*\)).*/\1/p' | head -1)
-if [[ -z "$revision" ]]; then
-    echo "cannot determine the Playwright Chromium revision" >&2
-    exit 2
-fi
+browser_path=$(PLAYWRIGHT_BROWSERS_PATH="$out/ms-playwright" PYTHONPATH="$out/site-packages" \
+    "$out/python/bin/python3" -c 'from playwright.sync_api import sync_playwright; p = sync_playwright().start(); print(p.chromium.executable_path); p.stop()')
+revision_dir=${browser_path#"$out/ms-playwright/"}
+revision_dir=${revision_dir%%/*}
 cache=${PLAYWRIGHT_CACHE:-$HOME/.cache/ms-playwright}
-for name in "chromium-$revision" "chromium_headless_shell-$revision" "ffmpeg-1011"; do
+for name in "$revision_dir" "ffmpeg-1011"; do
     if [[ -d "$cache/$name" ]]; then
         cp -a "$cache/$name" "$out/ms-playwright/"
         rm -rf "$out/ms-playwright/$name/.links"
     fi
 done
-if [[ ! -d "$out/ms-playwright/chromium-$revision" ]]; then
+if [[ ! -x "$browser_path" ]]; then
     PLAYWRIGHT_BROWSERS_PATH="$out/ms-playwright" PYTHONPATH="$out/site-packages" \
-        "$out/python/bin/python3" -m playwright install chromium
+        "$out/python/bin/python3" -m playwright install --no-shell chromium
 fi
+python3 "$here/../scripts/stage-linux-libraries.py" --out "$out/chromium-libs" "$browser_path"
+python3 "$here/../scripts/stage-fonts.py" --out "$out/fonts" --license "$here/../assets/DejaVu-LICENSE.txt"
 
 cat > "$out/bin/python" <<'EOF'
 #!/bin/sh
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 export PYTHONPATH="$here/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+export GEWU_BROWSER_FULL_CHROMIUM=1
 export PLAYWRIGHT_BROWSERS_PATH="$here/ms-playwright"
+export LD_LIBRARY_PATH="$here/chromium-libs"
+export FONTCONFIG_FILE="$here/fonts/fonts.conf"
+export XDG_DATA_HOME="$here"
 exec "$here/python/bin/python3" "$@"
 EOF
 chmod 755 "$out/bin/python"
@@ -74,17 +79,18 @@ import json, sys
 from pathlib import Path
 plugin = json.loads(Path(sys.argv[1]).read_text())
 manifest = {
-    "schemaVersion": "gewu.runtime/v1",
+    "schemaVersion": "gewu.runtime/v2",
     "id": "gewu-browser-runtime",
     "version": plugin["version"],
     "plugin": plugin["id"],
     "target": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
     "launcher": "bin/launch",
     "probe": "bin/probe",
+    "installation": {"kind": "ready"},
     "capabilities": ["chromium", "playwright", "managed-browser"],
 }
 Path(sys.argv[2]).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n")
 PY
 
 GEWU_RUNTIME_ROOT="$out" "$out/bin/probe"
-echo "runtime staged at $out (chromium $revision)"
+echo "runtime staged at $out ($revision_dir)"
