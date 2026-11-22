@@ -49,7 +49,7 @@ def main():
         wrapper.chmod(0o755)
         capabilities.append("pdf")
     shutil.copytree(args.standalone_python, out / "python")
-    shutil.copytree(args.pandoc_data, out / "pandoc-data")
+    shutil.copytree(args.pandoc_data, out / "pandoc-data/data")
     for name in ("launch", "probe"):
         shutil.copy2(HERE / name, out / "bin" / name)
         (out / "bin" / name).chmod(0o755)
