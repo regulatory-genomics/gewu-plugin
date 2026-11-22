@@ -40,7 +40,7 @@
       "buildScript": "./paper/package.py"
     },
     "manimble": {
-      "version": "0.2.2",
+      "version": "0.2.3",
       "upstream": "https://github.com/pachterlab/Manimble",
       "application": "./manimble/engine",
       "plugin": "./manimble",
