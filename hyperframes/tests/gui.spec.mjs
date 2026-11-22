@@ -1,4 +1,4 @@
-import { cp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -7,18 +7,25 @@ export function register({ test, expect, startFixture }) {
     page,
   }) => {
     test.setTimeout(600000);
+    if (!process.env.GEWU_EVIDENCE) throw Error("Set GEWU_EVIDENCE");
+    await mkdir(process.env.GEWU_EVIDENCE, { recursive: true });
     const installed = process.env.GEWU_INSTALLED_HOME
       ? { home: process.env.GEWU_INSTALLED_HOME, package: process.env.GEWU_INSTALLED_PACKAGE }
       : undefined;
-    if (installed && !installed.package) throw Error("Set GEWU_INSTALLED_PACKAGE with GEWU_INSTALLED_HOME");
-    const fixture = await startFixture(installed ? { installed, appOrigins: true } : {
-      settings: {
-        chromePath: process.env.GEWU_HYPERFRAMES_CHROME,
-        ffmpegPath: process.env.GEWU_HYPERFRAMES_FFMPEG,
-        ffprobePath: process.env.GEWU_HYPERFRAMES_FFPROBE,
-      },
-      appOrigins: true,
-    });
+    if (installed && !installed.package)
+      throw Error("Set GEWU_INSTALLED_PACKAGE with GEWU_INSTALLED_HOME");
+    const fixture = await startFixture(
+      installed
+        ? { installed, appOrigins: true }
+        : {
+            settings: {
+              chromePath: process.env.GEWU_HYPERFRAMES_CHROME,
+              ffmpegPath: process.env.GEWU_HYPERFRAMES_FFMPEG,
+              ffprobePath: process.env.GEWU_HYPERFRAMES_FFPROBE,
+            },
+            appOrigins: true,
+          },
+    );
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     const failures = [];
@@ -152,9 +159,6 @@ export function register({ test, expect, startFixture }) {
       await call("studio_seek", { time: 2 });
       const composition = studio.locator("hyperframes-player").first().frameLocator("iframe");
       await expect(composition.locator("#intro-title")).toBeVisible();
-      const nested = look.data.elements.find(
-        (e) => e.sourceFile === "compositions/intro.html" && e.tag === "h1",
-      ).handle;
       const old = await call("source.read", { path: "compositions/intro.html" });
       const sdkEdit = await call("element.edit", {
         sourceFile: "compositions/intro.html",
