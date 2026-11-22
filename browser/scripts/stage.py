@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 
@@ -18,13 +20,19 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--python",
-        help="development only: bake this interpreter into bin/browser-gewu",
+        help="local source install: bind this executable Python (venv supported)",
     )
     parser.add_argument(
         "--browsers",
-        help="development only: PLAYWRIGHT_BROWSERS_PATH for the staged launcher",
+        help="local source install: bind a non-default Playwright browser cache (requires --python)",
     )
     args = parser.parse_args()
+    if args.browsers and not args.python:
+        parser.error("--browsers requires --python")
+    if args.python:
+        args.python = os.path.abspath(args.python)
+        if not Path(args.python).is_file() or not os.access(args.python, os.X_OK):
+            parser.error("--python must point to an executable interpreter")
     source = Path(__file__).resolve().parents[1] / "plugin"
     out = args.out.resolve()
     if out.exists() or out.is_relative_to(source):
@@ -38,13 +46,13 @@ def main() -> int:
     entry = out / "bin" / "browser-gewu"
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     if args.python:
-        browsers = f'export PLAYWRIGHT_BROWSERS_PATH="{args.browsers}"\n' if args.browsers else ""
+        browsers = f"export PLAYWRIGHT_BROWSERS_PATH={shlex.quote(os.path.abspath(args.browsers))}\n" if args.browsers else ""
         entry.write_text(
             "#!/bin/sh\n"
             "set -eu\n"
             'here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
             f"{browsers}"
-            f'exec "{args.python}" "$here/../adapter.py"\n',
+            f'exec {shlex.quote(args.python)} "$here/../adapter.py"\n',
             encoding="utf-8",
         )
         entry.chmod(0o755)

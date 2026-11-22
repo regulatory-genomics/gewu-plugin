@@ -17,6 +17,88 @@ live JPEG frame of the active tab, the tab strip and the current URL, and
 forwards the user's click, keyboard and wheel input. GeWu injects the private
 Preview token on its service proxy; the webview never sees it.
 
+## Install (recommended)
+
+In GeWu Marketplace, choose **Install**. Or run this on the GeWu host as the
+user running GeWu:
+
+```sh
+gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable --runtime auto
+gewu plugin doctor gewu-browser
+gewu plugin check gewu-browser --version 0.1.2 --probe \
+  --workspace /absolute/path/to/workspace --session installation-check
+```
+
+Auto follows the signed release's runtime plan. The current plan recipe prefers
+an existing **Python** Playwright + Chromium environment, then the bundled runtime.
+Older signed catalogs may still prefer bundled; `--runtime external` explicitly
+selects reuse and `--runtime bundled` explicitly selects the bundle.
+
+Detection checks `GEWU_BROWSER_PYTHON`, then `python3` on the host's PATH (including
+an activated venv). It does not scan every conda/venv directory. The compatibility
+probe launches headless Chromium, renders an offline page and captures a PNG,
+with a 20-second outer timeout. Merely having Node Playwright or a Chromium file
+is insufficient. When no usable environment is found, let Auto download the
+bundle instead of manually creating another environment.
+
+For an existing venv outside PATH:
+
+```sh
+gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable \
+  --runtime auto --executable /absolute/path/to/venv/bin/python
+```
+
+The selected environment must remain at that path for the installed plugin to
+work. Reuse starts a private browser, not the user's existing tabs or profile.
+After CLI installation, restart a running GeWu; Marketplace installation refreshes
+the live plugin registry. Open Browser, open a page, and use `page.screenshot` to
+confirm the resulting PNG is usable. `plugin check --probe` alone checks the
+adapter lifecycle, not this user operation.
+
+## Advanced: install the adapter from source
+
+Check out the immutable revision from the release's source link, then run these
+commands from its `browser/` directory. The adapter is Python source; Chromium
+does not need to be compiled. `plugin/lib/gewu_plugin.py` supplies the vendored
+GeWu SDK, so this local staging path needs no GeWu source checkout.
+
+Select an existing compatible Python environment and verify it first:
+
+```sh
+PYTHON=/absolute/path/to/venv/bin/python
+"$PYTHON" -c 'import json; m=json.load(open("plugin/plugin.json")); assert (m["id"], m["version"]) == ("gewu-browser", "0.1.2")'
+"$PYTHON" -c 'import runpy; exec(runpy.run_path("scripts/make-runtime-plan.py")["PROBE"])'
+```
+
+Only if no environment is usable, create a new isolated one (the tested dependency
+is `playwright==1.59.0`) and repeat the probe:
+
+```sh
+RUNTIME=$(mktemp -d "$HOME/gewu-browser-runtime.XXXXXX")
+python3 -m venv "$RUNTIME/venv"
+PYTHON="$RUNTIME/venv/bin/python"
+"$PYTHON" -m pip install 'playwright==1.59.0'
+"$PYTHON" -m playwright install chromium
+"$PYTHON" -c 'import runpy; exec(runpy.run_path("scripts/make-runtime-plan.py")["PROBE"])'
+```
+
+Stage and register the adapter with the selected interpreter bound into its
+launcher. Keep the selected environment; it is not copied into the package:
+
+```sh
+WORK=$(mktemp -d "$HOME/gewu-browser-source.XXXXXX")
+"$PYTHON" scripts/stage.py --out "$WORK/package" --python "$PYTHON"
+gewu plugin install "$WORK/package"
+gewu plugin check gewu-browser --version 0.1.2 --probe \
+  --workspace /absolute/path/to/workspace --session installation-check
+```
+
+For a non-default browser cache, set `PLAYWRIGHT_BROWSERS_PATH` during dependency
+installation and probing, and pass the same absolute directory as `--browsers`
+to `stage.py`. The launcher preserves it when GeWu starts with a minimal environment.
+Finish with the restart/open/page/screenshot check above. A local staged package
+is host-specific; use the release builder below for redistributable packages.
+
 ## Settings
 
 ```json
@@ -136,8 +218,8 @@ GEWU_APP_SPEC="$PWD/tests/gui.spec.mjs" GEWU_APP_PLUGIN=/tmp/gewu-browser-packag
 ```
 
 The GeWu fixture sets a temporary `HOME`, so the adapter cannot find the
-development browser cache by default. `--python` and `--browsers` bake those
-dev paths into the staged launcher only; the release packer never uses them.
+development browser cache by default. `--python` and `--browsers` bind those
+host-local paths into the staged launcher only; the release packer never uses them.
 
 ## Packaging
 
@@ -212,11 +294,11 @@ Install with:
 
 ```sh
 gewu plugin search browser
-gewu plugin marketplace-install gewu-browser --version 0.1.1
+gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable --runtime auto
 gewu plugin doctor
 ```
 
-## Limits in 0.1.1
+## Limits in 0.1.2
 
 - One browser per session; no cross-session tab sharing.
 - Frames and shadow DOM are not inspected yet; `page.snapshot` reads the main

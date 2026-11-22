@@ -7,14 +7,17 @@ import argparse
 import json
 from pathlib import Path
 
-PROBE = (
-    "from playwright.sync_api import sync_playwright;"
-    "p=sync_playwright().start();"
-    "e=p.chromium.executable_path;"
-    "p.stop();"
-    "import os,sys;"
-    "sys.exit(0 if e and os.path.exists(e) else 1)"
-)
+PROBE = "exec(" + repr("""from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True, timeout=10000, args=["--disable-dev-shm-usage"])
+    try:
+        page = browser.new_page()
+        page.set_content("<title>GeWu runtime probe</title><h1>Ready</h1>", timeout=3000)
+        assert page.title() == "GeWu runtime probe"
+        assert page.screenshot(timeout=3000).startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+    finally:
+        browser.close()
+""") + ")"
 
 
 def main() -> int:
@@ -34,14 +37,14 @@ def main() -> int:
     target = runtime["target"]
     plan = {
         "schemaVersion": "gewu.runtime-plan/v1",
-        "policies": ["bundled", "external"],
+        "policies": ["external", "bundled"],
         "providers": [
             {
                 "kind": "external",
                 "id": "gewu-browser-python",
                 "target": target,
                 "executable": {"env": "GEWU_BROWSER_PYTHON", "commands": ["python3"]},
-                "probe": {"args": ["-c", PROBE], "timeoutSeconds": 120},
+                "probe": {"args": ["-c", PROBE], "timeoutSeconds": 20},
                 "binaries": {"python": "{executable}", "python3": "{executable}"},
             },
             {
