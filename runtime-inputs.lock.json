@@ -41,7 +41,9 @@
     "bun": {
       "version": "1.3.14",
       "sha256": "951ee2aee855f08595aeec6225226a298d3fea83a3dcd6465c09cbccdf7e848f"
-    }
+    },
+    "engineCommit": "1139193a09d19bf898c3b79058216d93b1cd4f8d",
+    "bunLockSha256": "62f4b4c5686c0daa4a4b13665c61a163cb5a04ff869e1173c422f93bb155565d"
   },
   "inkscape": {
     "appImage": {
@@ -60,6 +62,12 @@
     "cabal": {
       "version": "3.14.1.0",
       "sha256": "4cdc837b23f59eb7b273dee886617dc28ea8e8ced7d89e276be2b8b95f3ba393"
-    }
+    },
+    "binarySha256": "6d12cb363d4798eb27c2b57323a3c9ab39763dd0c434921c9abc0194a8b2f5c4"
+  },
+  "manimble": {
+    "pixiLockSha256": "50bd1d5c73ded52c38658d2d933c5d73e86a5214a923849810477b178845faad",
+    "pixiPackSha256": "d058b725d1e9e13f4762c6a45484668703c8feaa2317e5431ab952a9cd49fc60",
+    "pixiUnpackSha256": "70bddd77078ac2fe320075f8a03e7731e67e0583f732034ff2d7004b0a0b817c"
   }
 }
