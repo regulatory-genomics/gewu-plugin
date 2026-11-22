@@ -1,6 +1,6 @@
 {
   "plugin": "hyperframes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageFiles": ["plugin.json", "tools.schema.json", "README.md", "INSTALL.md"],
   "packageDirs": ["bin", "engine", "web", "registry", "skills"],
   "buildInputs": [

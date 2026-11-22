@@ -1,7 +1,7 @@
 {
   "apiVersion": "gewu.plugin/v1",
   "id": "gewu-browser",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "title": "GeWu Browser",
   "scope": "session",
   "backend": {

@@ -1,7 +1,7 @@
 {
   "apiVersion": "gewu.plugin/v1",
   "id": "hyperframes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "title": "Hyperframes",
   "scope": "resource",
   "backend": { "connector": "gewu-stdio", "config": { "entry": "bin/hyperframes-gewu" } },

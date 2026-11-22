@@ -1,6 +1,6 @@
 {
   "plugin": "manimble",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "packageFiles": ["adapter.py", "plugin.json", "tools.schema.json", "README.md", "INSTALL.md", "fixtures/deck/slides.py"],
   "packageDirs": ["bin", "skills", "web"],
   "sdkFile": "gewu_plugin.py",

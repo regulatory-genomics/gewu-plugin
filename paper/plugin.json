@@ -1,5 +1,5 @@
 {
-  "apiVersion":"gewu.plugin/v1", "id":"paper", "version":"0.3.1", "title":"Paper", "scope":"resource",
+  "apiVersion":"gewu.plugin/v1", "id":"paper", "version":"0.3.2", "title":"Paper", "scope":"resource",
   "backend":{"connector":"gewu-stdio","config":{"entry":"bin/paper-gewu"}},
   "settingsSchema":{"type":"object","additionalProperties":false,"properties":{
     "executable":{"type":"string","minLength":1},

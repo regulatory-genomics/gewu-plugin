@@ -1,7 +1,7 @@
 {
   "apiVersion": "gewu.plugin/v1",
   "id": "manimble",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "title": "Manimble",
   "scope": "resource",
   "backend": {
