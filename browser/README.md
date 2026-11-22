@@ -23,16 +23,21 @@ In GeWu Marketplace, choose **Install**. Or run this on the GeWu host as the
 user running GeWu:
 
 ```sh
-gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable --runtime auto
+gewu plugin marketplace-install gewu-browser --channel stable --runtime auto
 gewu plugin doctor gewu-browser
-gewu plugin check gewu-browser --version 0.1.2 --probe \
+gewu plugin check gewu-browser --probe \
   --workspace /absolute/path/to/workspace --session installation-check
 ```
 
-Auto follows the signed release's runtime plan. The current plan recipe prefers
-an existing **Python** Playwright + Chromium environment, then the bundled runtime.
-Older signed catalogs may still prefer bundled; `--runtime external` explicitly
-selects reuse and `--runtime bundled` explicitly selects the bundle.
+Auto follows the selected signed release. Prebuilt v3 releases use the bundled
+runtime; legacy v2 runtime plans may reuse an existing **Python** Playwright +
+Chromium environment and fall back to bundled. `--runtime external` selects
+reuse only when that release declares it. Use `--channel beta --runtime bundled`
+for the published Linux beta. The source checkout's version is not necessarily
+published; the signed catalog determines which version can be installed.
+
+If multiple versions are installed, choose the exact version from `plugin doctor`
+and add `--version <installed-version>` to `plugin check`.
 
 Detection checks `GEWU_BROWSER_PYTHON`, then `python3` on the host's PATH (including
 an activated venv). It does not scan every conda/venv directory. The compatibility
@@ -44,7 +49,7 @@ bundle instead of manually creating another environment.
 For an existing venv outside PATH:
 
 ```sh
-gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable \
+gewu plugin marketplace-install gewu-browser --channel stable \
   --runtime auto --executable /absolute/path/to/venv/bin/python
 ```
 
@@ -66,7 +71,8 @@ Select an existing compatible Python environment and verify it first:
 
 ```sh
 PYTHON=/absolute/path/to/venv/bin/python
-"$PYTHON" -c 'import json; m=json.load(open("plugin/plugin.json")); assert (m["id"], m["version"]) == ("gewu-browser", "0.1.2")'
+VERSION=$("$PYTHON" -c 'import json; m=json.load(open("plugin/plugin.json")); assert m["id"] == "gewu-browser"; print(m["version"])')
+printf 'Selected source version: %s\n' "$VERSION"
 "$PYTHON" -c 'import runpy; exec(runpy.run_path("scripts/make-runtime-plan.py")["PROBE"])'
 ```
 
@@ -89,7 +95,7 @@ launcher. Keep the selected environment; it is not copied into the package:
 WORK=$(mktemp -d "$HOME/gewu-browser-source.XXXXXX")
 "$PYTHON" scripts/stage.py --out "$WORK/package" --python "$PYTHON"
 gewu plugin install "$WORK/package"
-gewu plugin check gewu-browser --version 0.1.2 --probe \
+gewu plugin check gewu-browser --version "$VERSION" --probe \
   --workspace /absolute/path/to/workspace --session installation-check
 ```
 
@@ -294,11 +300,11 @@ Install with:
 
 ```sh
 gewu plugin search browser
-gewu plugin marketplace-install gewu-browser --version 0.1.2 --channel stable --runtime auto
+gewu plugin marketplace-install gewu-browser --channel stable --runtime auto
 gewu plugin doctor
 ```
 
-## Limits in 0.1.2
+## Limits
 
 - One browser per session; no cross-session tab sharing.
 - Frames and shadow DOM are not inspected yet; `page.snapshot` reads the main
