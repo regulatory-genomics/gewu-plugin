@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--paper", required=True, type=Path)
     parser.add_argument("--paper-sha256", required=True, help="SHA-256 from the pinned Paper build job")
     parser.add_argument("--standalone-python", required=True, type=Path)
+    parser.add_argument("--pandoc-data", required=True, type=Path, help="Pandoc share/data tree used by the Paper CLI")
     parser.add_argument("--target", required=True, choices=TARGETS)
     parser.add_argument("--tectonic", type=Path, help="Portable renderer for the optional PDF profile")
     parser.add_argument("--tex-bundle", type=Path, help="Local pinned Tectonic directory or ZIP bundle")
@@ -48,6 +49,7 @@ def main():
         wrapper.chmod(0o755)
         capabilities.append("pdf")
     shutil.copytree(args.standalone_python, out / "python")
+    shutil.copytree(args.pandoc_data, out / "pandoc-data/data")
     for name in ("launch", "probe"):
         shutil.copy2(HERE / name, out / "bin" / name)
         (out / "bin" / name).chmod(0o755)

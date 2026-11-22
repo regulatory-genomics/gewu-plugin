@@ -25,14 +25,14 @@
   },
   "plugins": {
     "gewu-browser": {
-      "version": "0.1.3",
+      "version": "0.1.5",
       "application": "./browser",
       "plugin": "./browser/plugin",
       "runtimeRecipe": "./browser/runtime",
       "buildScript": "./browser/scripts/stage-bundled-runtime.sh"
     },
     "paper": {
-      "version": "0.3.2",
+      "version": "0.3.4",
       "application": "https://github.com/regulatory-genomics/paper",
       "plugin": "./paper",
       "applicationCommit": "e0094d733910200d122f39faa5cc987b2c87983e",
@@ -40,7 +40,7 @@
       "buildScript": "./paper/package.py"
     },
     "manimble": {
-      "version": "0.2.2",
+      "version": "0.2.3",
       "upstream": "https://github.com/pachterlab/Manimble",
       "application": "./manimble/engine",
       "plugin": "./manimble",
@@ -49,14 +49,14 @@
       "buildScript": "./manimble/build-release.py"
     },
     "inkscape": {
-      "version": "0.2.1",
+      "version": "0.2.2",
       "application": "https://gitlab.com/inkscape/inkscape",
       "plugin": "./inkscape/plugins/gewu",
       "runtimeRecipe": "./inkscape/runtime/build.py",
       "buildScript": "./inkscape/plugins/gewu/package.py"
     },
     "hyperframes": {
-      "version": "0.1.1",
+      "version": "0.1.2",
       "application": "https://github.com/heygen-com/hyperframes",
       "plugin": "./hyperframes",
       "runtimeRecipe": "./hyperframes/runtime/build.py",

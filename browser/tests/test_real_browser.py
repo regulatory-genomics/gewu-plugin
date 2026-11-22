@@ -249,6 +249,31 @@ class RealBrowserTest(unittest.TestCase):
         self.assertFalse(self.backend.started)
         self.assertEqual(self.backend.list_tabs(), {"tabs": [], "focusedTabId": None})
 
+    def test_closed_context_is_reported_and_next_open_recovers(self):
+        tab = self.backend.open_tab(self.url)
+        self.backend._thread.call(lambda _pw: self.backend._context.close())
+        self.assertFalse(self.backend.state()["connected"])
+        self.assertEqual(self.backend.list_tabs()["tabs"], [])
+        recovered = self.backend.open_tab(self.url)
+        self.assertNotEqual(recovered["id"], tab["id"])
+        self.assertIn("Fixture page", self.backend.snapshot(recovered["id"])["content"])
+        with self.assertRaises(BrowserError) as caught:
+            self.backend.snapshot(tab["id"])
+        self.assertEqual(caught.exception.code, "TAB_UNAVAILABLE")
+
+    def test_browser_disconnect_is_reported_and_next_open_recovers(self):
+        self.backend.open_tab(self.url)
+        self.backend._thread.call(lambda _pw: self.backend._browser.close())
+        self.assertFalse(self.backend.state()["connected"])
+        tab = self.backend.open_tab(self.url)
+        self.assertIn("Fixture page", self.backend.snapshot(tab["id"])["content"])
+
+    def test_closed_backend_cannot_leak_a_restarted_browser(self):
+        self.backend.stop()
+        with self.assertRaises(BrowserError) as caught:
+            self.backend.open_tab(self.url)
+        self.assertEqual(caught.exception.code, "BROWSER_DISCONNECTED")
+
 
 class CdpModeTest(unittest.TestCase):
     def test_cdp_requires_an_endpoint(self):

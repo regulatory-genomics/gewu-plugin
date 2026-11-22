@@ -1,6 +1,6 @@
 {
   "plugin": "gewu-browser",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "packageFiles": [
     "adapter.py",
     "backend.py",

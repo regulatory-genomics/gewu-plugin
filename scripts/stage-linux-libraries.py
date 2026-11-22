@@ -13,9 +13,10 @@ GLIBC = {"libc.so.6", "libm.so.6", "libmvec.so.1", "libpthread.so.0", "libdl.so.
          "libresolv.so.2", "libutil.so.1", "libanl.so.1", "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"}
 
 
-def stage(executables, out):
-    libraries = {}
-    for executable in executables:
+def stage(executables, out, dlopen=()):
+    # dlopen modules do not appear in the executable's ELF dependency table.
+    libraries = {path.name: path.resolve(strict=True) for path in dlopen}
+    for executable in [*executables, *dlopen]:
         result = subprocess.run(["ldd", str(executable)], check=False, capture_output=True, text=True)
         if result.returncode and "not a dynamic executable" not in result.stderr + result.stdout:
             raise RuntimeError(f"ldd failed for {executable}: {result.stderr.strip()}")
@@ -26,7 +27,7 @@ def stage(executables, out):
             if match and match[1] not in GLIBC:
                 path = Path(match[2]).resolve(strict=True)
                 # Libraries already carried beside the executable (for example Vulkan SwiftShader) stay there.
-                if path.is_relative_to(executable.resolve().parent):
+                if executable not in dlopen and path.is_relative_to(executable.resolve().parent):
                     continue
                 if libraries.setdefault(match[1], path) != path:
                     raise RuntimeError(f"multiple sources for {match[1]}")
@@ -43,6 +44,8 @@ def stage(executables, out):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--dlopen", action="append", default=[], type=Path,
+                        help="Matching dynamically loaded module; include it and its ELF dependencies")
     parser.add_argument("executable", type=Path, nargs="+")
     args = parser.parse_args()
-    stage(args.executable, args.out)
+    stage(args.executable, args.out, args.dlopen)

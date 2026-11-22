@@ -1,7 +1,7 @@
 {
   "apiVersion": "gewu.plugin/v1",
   "id": "manimble",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "title": "Manimble",
   "scope": "resource",
   "backend": {
@@ -13,7 +13,7 @@
   "settingsSchema": {
     "type": "object",
     "additionalProperties": false,
-        "required": [],
+    "required": [],
     "properties": {
       "python": {
         "type": "string",

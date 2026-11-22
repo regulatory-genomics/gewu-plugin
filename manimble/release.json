@@ -1,9 +1,25 @@
 {
   "plugin": "manimble",
-  "version": "0.2.2",
-  "packageFiles": ["adapter.py", "plugin.json", "tools.schema.json", "README.md", "INSTALL.md", "fixtures/deck/slides.py"],
-  "packageDirs": ["bin", "skills", "web"],
+  "version": "0.2.3",
+  "packageFiles": [
+    "adapter.py",
+    "plugin.json",
+    "tools.schema.json",
+    "README.md",
+    "INSTALL.md",
+    "fixtures/deck/slides.py"
+  ],
+  "packageDirs": [
+    "bin",
+    "skills",
+    "web"
+  ],
   "sdkFile": "gewu_plugin.py",
   "sdkDestination": "lib/gewu_plugin.py",
-  "buildInputs": ["pixi.lock", "pixi-pack/v0.7.12", "python-pptx", "imageio-ffmpeg"]
+  "buildInputs": [
+    "pixi.lock",
+    "pixi-pack/v0.7.12",
+    "python-pptx",
+    "imageio-ffmpeg"
+  ]
 }

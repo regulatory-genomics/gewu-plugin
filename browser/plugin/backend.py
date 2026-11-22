@@ -131,6 +131,7 @@ class _PlaywrightThread(threading.Thread):
         while True:
             job, box, done = self.jobs.get()
             if job is None:
+                done.set()
                 break
             try:
                 box.append(("ok", job(self.playwright)))
@@ -180,17 +181,25 @@ class PlaywrightBackend:
         self._thread: _PlaywrightThread | None = None
         self._tabs: dict[str, Tab] = {}
         self._state_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
         self._browser = None
         self._context = None
         self._closed = False
+        self._connected = False
 
     @property
     def started(self) -> bool:
-        return self._thread is not None and self._browser is not None
+        return self._connected and not self._closed
 
     # -- lifecycle ---------------------------------------------------------
 
     def start(self) -> None:
+        with self._lifecycle_lock:
+            self._start()
+
+    def _start(self) -> None:
+        if self._closed:
+            raise BrowserError("BROWSER_DISCONNECTED", "This browser backend has been stopped")
         if not PLAYWRIGHT_AVAILABLE:
             raise BrowserError(
                 "RUNTIME_UNAVAILABLE",
@@ -198,14 +207,15 @@ class PlaywrightBackend:
             )
         if self.started:
             return
-        if self._thread is not None:
-            raise BrowserError("BROWSER_UNAVAILABLE", "The browser is still shutting down")
-        thread = _PlaywrightThread()
-        thread.start()
-        thread.ready.wait(timeout=30)
-        if thread.error is not None:
-            raise BrowserError("BROWSER_UNAVAILABLE", "Playwright could not start", retryable=False)
-        self._thread = thread
+        thread = self._thread
+        if thread is None:
+            thread = _PlaywrightThread()
+            thread.start()
+            if not thread.ready.wait(timeout=30) or thread.error is not None:
+                raise BrowserError("BROWSER_UNAVAILABLE", "Playwright could not start", retryable=False)
+            self._thread = thread
+        else:
+            thread.call(self._shutdown)
         try:
             thread.call(self._launch)
         except BaseException:
@@ -257,7 +267,15 @@ class PlaywrightBackend:
             self._context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
+        self._browser.on("disconnected", self._disconnected)
+        self._context.on("close", self._disconnected)
+        self._connected = True
         return True
+
+    def _disconnected(self, *_args) -> None:
+        with self._state_lock:
+            self._connected = False
+            self._tabs.clear()
 
     def _adopt(self, page) -> Tab:
         tab_id = "tab_" + str(uuid.uuid4())
@@ -285,6 +303,10 @@ class PlaywrightBackend:
             pass
 
     def stop(self) -> None:
+        with self._lifecycle_lock:
+            self._stop()
+
+    def _stop(self) -> None:
         if self._closed:
             return
         self._closed = True
@@ -317,6 +339,9 @@ class PlaywrightBackend:
             except PlaywrightError:
                 pass
         # A CDP browser belongs to the user; disconnect only.
+        self._disconnected()
+        self._browser = None
+        self._context = None
         return True
 
     # -- helpers -----------------------------------------------------------
@@ -331,6 +356,12 @@ class PlaywrightBackend:
         except PlaywrightTimeoutError as error:
             raise BrowserError("TIMED_OUT", f"Browser operation timed out: {error}", retryable=True) from error
         except PlaywrightError as error:
+            if not self.started:
+                raise BrowserError(
+                    "BROWSER_DISCONNECTED",
+                    "The browser or context closed; call tabs.open to start a fresh browser. Previous tab IDs are no longer valid.",
+                    retryable=True,
+                ) from error
             raise BrowserError("BROWSER_ERROR", str(error), retryable=False) from error
 
     def _tab(self, tab_id: str) -> Tab:

@@ -1,5 +1,7 @@
 # Inkscape for GeWu — native workspace v0.2
 
+For the Linux core Web/headless release, see [`INSTALL.md`](INSTALL.md).
+
 A real Inkscape window inside GeWu, with its native tools, layers, text cursor,
 node editing, snapping and undo. The agent reads and edits the same unsaved SVG.
 The browser receives the desktop display; the figure remains editable vectors.

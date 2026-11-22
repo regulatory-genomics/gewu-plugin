@@ -1,9 +1,22 @@
 {
   "plugin": "paper",
-  "version": "0.3.2",
-  "packageFiles": ["adapter.py", "document.py", "plugin.json", "tools.schema.json", "README.md"],
-  "packageDirs": ["bin", "skills", "web"],
+  "version": "0.3.4",
+  "packageFiles": [
+    "adapter.py",
+    "document.py",
+    "plugin.json",
+    "tools.schema.json",
+    "README.md"
+  ],
+  "packageDirs": [
+    "bin",
+    "skills",
+    "web"
+  ],
   "sdkFile": "gewu_plugin.py",
   "sdkDestination": "lib/gewu_plugin.py",
-  "buildInputs": ["paper-cli", "tectonic"]
+  "buildInputs": [
+    "paper-cli",
+    "tectonic"
+  ]
 }

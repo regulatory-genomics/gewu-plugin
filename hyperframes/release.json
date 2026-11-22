@@ -1,8 +1,19 @@
 {
   "plugin": "hyperframes",
-  "version": "0.1.1",
-  "packageFiles": ["plugin.json", "tools.schema.json", "README.md", "INSTALL.md"],
-  "packageDirs": ["bin", "engine", "web", "registry", "skills"],
+  "version": "0.1.2",
+  "packageFiles": [
+    "plugin.json",
+    "tools.schema.json",
+    "README.md",
+    "INSTALL.md"
+  ],
+  "packageDirs": [
+    "bin",
+    "engine",
+    "web",
+    "registry",
+    "skills"
+  ],
   "buildInputs": [
     "hyperframes-0.9.75",
     "node>=22 (host)",
