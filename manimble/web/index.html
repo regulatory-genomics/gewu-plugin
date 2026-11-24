@@ -7,26 +7,26 @@
 <link rel="stylesheet" href="editor.css">
 </head>
 <body>
-<header>
-  <div class="group">
-    <button id="add" type="button" title="Add a slide after this one">+ Slide</button>
+<header class="editor-toolbar" aria-label="Editor toolbar">
+  <div class="group slide-actions">
+    <button id="add" class="primary-action" type="button" title="Add a slide after this one">+ Slide</button>
     <button id="duplicate" type="button">Duplicate</button>
     <button id="delete-slide" type="button">Delete slide</button>
-    <button id="up" type="button" aria-label="Move slide up">↑</button>
-    <button id="down" type="button" aria-label="Move slide down">↓</button>
+    <button id="up" class="icon-button" type="button" aria-label="Move slide up" title="Move slide up">↑</button>
+    <button id="down" class="icon-button" type="button" aria-label="Move slide down" title="Move slide down">↓</button>
   </div>
-  <div class="group">
-    <button id="undo" type="button">Undo</button>
-    <button id="redo" type="button">Redo</button>
+  <div class="group history-actions">
+    <button id="undo" type="button" aria-label="Undo"><span aria-hidden="true">↶</span> Undo</button>
+    <button id="redo" type="button" aria-label="Redo"><span aria-hidden="true">↷</span> Redo</button>
   </div>
-  <div class="group">
+  <div class="group insert-actions">
     <input id="text" type="text" placeholder="New text" aria-label="New text" size="10">
-    <button id="insert-text" type="button">Text</button>
-    <button id="insert-rect" type="button">Rectangle</button>
-    <button id="insert-circle" type="button">Circle</button>
-    <button id="insert-arrow" type="button">Arrow</button>
+    <button id="insert-text" type="button" aria-label="Text"><span aria-hidden="true">T</span> Text</button>
+    <button id="insert-rect" type="button" aria-label="Rectangle"><span aria-hidden="true">□</span> Rectangle</button>
+    <button id="insert-circle" type="button" aria-label="Circle"><span aria-hidden="true">○</span> Circle</button>
+    <button id="insert-arrow" type="button" aria-label="Arrow"><span aria-hidden="true">→</span> Arrow</button>
   </div>
-  <div class="group">
+  <div class="group arrange-actions">
     <button id="group" type="button" disabled>Group</button>
     <button id="ungroup" type="button" disabled>Ungroup</button>
     <button id="front" type="button" disabled title="Bring to front">Front</button>
@@ -35,19 +35,27 @@
     <button id="back" type="button" disabled title="Send to back">Back</button>
   </div>
   <div class="group right">
-    <label class="zoom">Zoom <input id="zoom" type="range" min="0.3" max="2" step="0.1" value="1"></label>
-    <button id="export" type="button">Export PPTX</button>
+    <label class="zoom" title="Canvas zoom"><span aria-hidden="true">−</span><input id="zoom" aria-label="Canvas zoom" type="range" min="0.3" max="2" step="0.1" value="1"><span aria-hidden="true">+</span></label>
+    <button id="export" class="export-action" type="button">Export PPTX</button>
   </div>
 </header>
-<p id="status" role="status">Connecting to GeWu…</p>
 <main>
-  <nav id="slides" aria-label="Slides"></nav>
-  <section id="stage" aria-label="Slide canvas">
-    <div id="canvas" tabindex="0" role="application" aria-label="Slide objects"></div>
+  <aside class="slide-sidebar">
+    <div class="panel-heading">Slides</div>
+    <nav id="slides" aria-label="Slides"></nav>
+  </aside>
+  <section class="canvas-workspace" aria-label="Canvas workspace">
+    <div class="ruler-corner" aria-hidden="true"></div>
+    <div class="ruler ruler-horizontal" aria-hidden="true"></div>
+    <div class="ruler ruler-vertical" aria-hidden="true"></div>
+    <div id="stage" aria-label="Slide canvas">
+      <div id="canvas" tabindex="0" role="application" aria-label="Slide objects"></div>
+    </div>
   </section>
-  <aside id="inspector" aria-label="Selection"></aside>
+  <aside id="inspector" class="inspector-panel" aria-label="Selection"></aside>
 </main>
 <footer>
+  <p id="status" role="status">Connecting to GeWu…</p>
   <div class="group" id="builds" role="group" aria-label="Builds"></div>
   <span id="hint"></span>
   <a id="download" hidden download>Download PowerPoint</a>
